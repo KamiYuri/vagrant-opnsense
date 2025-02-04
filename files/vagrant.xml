@@ -6,3 +6,4 @@
       <password>*</password>
       <uid>1001</uid>
       <shell>/bin/sh</shell>
+    </user>

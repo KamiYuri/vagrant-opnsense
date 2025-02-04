@@ -5,7 +5,7 @@ Vagrant.configure(2) do |config|
   #
 
   $opnsense_box = 'punktde/freebsd-141-ufs' # Which base box to use
-  $opnsense_release = '24.7'                # Which OPNsense release to install
+  $opnsense_release = '25.1'                # Which OPNsense release to install
   $virtual_machine_ip = '192.168.56.56'     # IP address of the firewall in the host-only network
   $vagrant_mount_path = '/var/vagrant'      # Shared path for development environment
 
@@ -14,7 +14,7 @@ Vagrant.configure(2) do |config|
   #
 
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
-  config.vm.synced_folder '.', "#{$vagrant_mount_path}", :nfs => true, :nfs_version => 3
+  config.vm.synced_folder '.', "#{$vagrant_mount_path}", :nfs => true, :nfs_version => 3, mount_options: ['vers=3', 'udp']
 
   config.ssh.shell = '/bin/sh'
   config.ssh.keep_alive = true
