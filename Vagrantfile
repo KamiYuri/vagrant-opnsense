@@ -14,7 +14,7 @@ Vagrant.configure(2) do |config|
   #
 
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
-  config.vm.synced_folder '.', "#{$vagrant_mount_path}", :nfs => true, :nfs_version => 3, mount_options: ['vers=3', 'udp']
+  config.vm.synced_folder '.', "#{$vagrant_mount_path}", :nfs => true, :nfs_version => 4
 
   config.ssh.shell = '/bin/sh'
   config.ssh.keep_alive = true
