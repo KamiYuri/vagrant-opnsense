@@ -1,11 +1,12 @@
 Vagrant.configure(2) do |config|
+  # config.vbguest.auto_update = false if Vagrant.has_plugin?("vagrant-vbguest")
 
   #
   # General settings
   #
 
-  $opnsense_box = 'freebsd/FreeBSD-13.2-RELEASE' # Which base box to use
-  $opnsense_release = '23.7'                # Which OPNsense release to install
+  $opnsense_box = 'freebsd/FreeBSD-14.1-RELEASE' # Which base box to use
+  $opnsense_release = '25.1'                # Which OPNsense release to install
   $virtual_machine_ip = '192.168.56.56'     # IP address of the firewall in the host-only network
   $vagrant_mount_path = '/var/vagrant'      # Shared path for development environment
 
@@ -14,12 +15,14 @@ Vagrant.configure(2) do |config|
   #
 
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
-  config.vm.synced_folder '.', "#{$vagrant_mount_path}", :rsync => true
+  config.vm.synced_folder '.', "#{$vagrant_mount_path}", type: 'rsync', rsync__exclude: ['.git/', '.vagrant/']
+
 
   config.ssh.shell = '/bin/sh'
   config.ssh.keep_alive = true
 
   config.vm.box = $opnsense_box
+  config.vm.boot_timeout = 6000
 
   config.vm.network 'private_network', ip: $virtual_machine_ip, auto_config: true
 
@@ -27,6 +30,13 @@ Vagrant.configure(2) do |config|
     vb.memory = 4096
     vb.cpus = 1
   end
+
+  #
+  # Install rsync first
+  #
+  config.vm.provision 'shell', inline: <<-SHELL
+    pkg install -y rsync
+  SHELL
 
   #
   # Bootstrap OPNsense
