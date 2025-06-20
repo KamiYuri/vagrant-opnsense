@@ -15,7 +15,7 @@ Vagrant.configure(2) do |config|
   #
 
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
-  config.vm.synced_folder '.', "#{$vagrant_mount_path}", type: 'rsync', rsync__exclude: ['.git/', '.vagrant/']
+  config.vm.synced_folder '.', "#{$vagrant_mount_path}", type: 'rsync', rsync__exclude: ['.git/', '.vagrant/', 'work/']
 
 
   config.ssh.shell = '/bin/sh'
