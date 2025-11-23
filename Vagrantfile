@@ -13,9 +13,8 @@ Vagrant.configure(2) do |config|
   #
   # Box configuration
   #
-
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
-  config.vm.synced_folder '.', "#{$vagrant_mount_path}", type: 'rsync', rsync__exclude: ['.git/', '.vagrant/', 'work/']
+  config.vm.synced_folder '.', "#{$vagrant_mount_path}", type: 'rsync', rsync__exclude: ['.git/', '.vagrant/']
 
 
   config.ssh.shell = '/bin/sh'
@@ -23,6 +22,7 @@ Vagrant.configure(2) do |config|
 
   config.vm.box = $opnsense_box
   config.vm.boot_timeout = 6000
+  config.disksize.size = '64GB'
 
   config.vm.network 'private_network', ip: $virtual_machine_ip, auto_config: true
 
