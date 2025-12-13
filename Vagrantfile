@@ -53,7 +53,7 @@ Vagrant.configure(2) do |config|
     sed -i '' -e '/reboot$/d' opnsense-bootstrap.sh
 
     # Start bootstrap
-    sh ./opnsense-bootstrap.sh -r #{$opnsense_release} -y
+    env CORE_PHP=84 CORE_PYTHON=312 sh ./opnsense-bootstrap.sh -r #{$opnsense_release} -y
 
     # Set correct interface names so OPNsense's order matches Vagrant's
     sed -i '' -e 's/mismatch0/em1/' /usr/local/etc/config.xml
