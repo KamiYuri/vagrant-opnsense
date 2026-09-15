@@ -1,0 +1,8 @@
+# Mọi file văn bản trong repo này đều được guest FreeBSD đọc: bootstrap.sh chạy
+# bằng /bin/sh, các mảnh XML trong files/ được nối thẳng vào config.xml. Ký tự
+# CR của Windows lọt vào một trong hai chỗ đó là hỏng lần provision.
+* text=auto eol=lf
+
+*.box binary
+*.png binary
+*.jpg binary

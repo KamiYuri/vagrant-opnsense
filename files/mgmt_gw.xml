@@ -1,0 +1,10 @@
+  <gateways>
+    <gateway_item>
+      <interface>opt1</interface>
+      <gateway>dynamic</gateway>
+      <name>MGMT_GW</name>
+      <ipprotocol>inet</ipprotocol>
+      <weight>1</weight>
+      <descr>libvirt NAT (host) - egress for VPN/site-routed subnets</descr>
+    </gateway_item>
+  </gateways>

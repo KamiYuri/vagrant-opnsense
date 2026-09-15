@@ -1,0 +1,6 @@
+    <opt1>
+      <enable>1</enable>
+      <if>vtnet0</if>
+      <descr>MGMT</descr>
+      <ipaddr>dhcp</ipaddr>
+    </opt1>
