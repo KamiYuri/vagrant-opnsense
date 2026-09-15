@@ -18,6 +18,14 @@ def opnsense_common(config)
   $opnsense_release   = ENV.fetch('OPNSENSE_RELEASE', '26.7')
 
   $virtual_machine_ip = '192.168.56.56'
+
+  # Hai cổng OPT để thử nghiệm. Mỗi cổng phải có dải riêng: provider VMware chỉ
+  # tạo mạng host-only riêng khi biết subnet, còn `type: 'dhcp'` làm cả hai rơi
+  # về vmnet1 mặc định và dùng chung một segment với nhau lẫn với máy ảo khác
+  # trên host. Địa chỉ ở đây chỉ dùng để chọn mạng phía host; `auto_config: false`
+  # giữ nguyên interface trong guest để OPNsense tự quản.
+  $opt1_ip = ENV.fetch('OPT1_IP', '192.168.57.56')
+  $opt2_ip = ENV.fetch('OPT2_IP', '192.168.58.56')
   $vagrant_mount_path = '/var/vagrant'
   $wan_bridge_dev     = ENV.fetch('WAN_BRIDGE', '')
 
@@ -51,54 +59,46 @@ def opnsense_common(config)
   # Synced folders
   #
   # vboxsf không chạy trên FreeBSD, nên chỉ còn hai lựa chọn:
-  #   nfs   - hai chiều, phản ánh sửa đổi ngay lập tức; host phải có NFS server
-  #           (Linux, macOS). Đây là mặc định.
-  #   rsync - một chiều host -> guest; dùng khi host là Windows vì Windows không
-  #           có sẵn NFS server. Đẩy thay đổi bằng `vagrant rsync`, hoặc để
-  #           `vagrant rsync-auto` chạy nền.
-  # Ép kiểu khác mặc định bằng SYNC_TYPE=nfs|rsync.
+  #   nfs  - hai chiều, phản ánh sửa đổi ngay lập tức; host phải có NFS server
+  #          (Linux, macOS). Đây là mặc định ngoài Windows.
+  #   none - không gắn thư mục nào vào guest. Mặc định trên Windows: Windows
+  #          không có NFS server, còn rsync thì một chiều và làm hỏng quyền
+  #          file lẫn ký tự kết thúc dòng. Thay vào đó, sửa file trực tiếp
+  #          trong guest qua SSH/SFTP (VS Code Remote-SSH) — xem README.
+  # Ép kiểu khác mặc định bằng SYNC_TYPE=nfs|none.
   #
-  $sync_type = ENV.fetch('SYNC_TYPE', Vagrant::Util::Platform.windows? ? 'rsync' : 'nfs').downcase
-  unless %w[nfs rsync].include?($sync_type)
-    raise "SYNC_TYPE phải là 'nfs' hoặc 'rsync' (nhận được: '#{$sync_type}')"
+  $sync_type = ENV.fetch('SYNC_TYPE', Vagrant::Util::Platform.windows? ? 'none' : 'nfs').downcase
+  unless %w[nfs none].include?($sync_type)
+    raise "SYNC_TYPE phải là 'nfs' hoặc 'none' (nhận được: '#{$sync_type}')"
   end
   puts "==> SYNC_TYPE = #{$sync_type}"
 
-  # NTFS không mang bit thực thi của Unix, nên mọi file đi qua rsync từ Windows
-  # đến guest với quyền do cygwin/msys suy đoán. Ép cứng thư mục 755 / file 755:
-  # Mk/core.mk cài đặt bằng `tar` nên mode của cây nguồn đi thẳng vào
-  # /usr/local, và 424 file trong core (src/opnsense/scripts, src/etc/rc.d,
-  # src/sbin...) cần bit thực thi để configd gọi được.
-  #
-  # Cây mã nguồn OPNsense (core/, plugins/, ports/, src/, tools/, update/) được
-  # clone vào /var/vagrant TỪ TRONG GUEST theo hướng dẫn phát triển ở README.
-  # Phía host không có chúng, nên `--delete` ở lần rsync kế tiếp sẽ xoá sạch nếu
-  # không loại trừ. Danh sách này phải khớp với .gitignore.
-  $rsync_opts = {
-    type: 'rsync',
-    rsync__exclude: ['.git/', '.vagrant/', 'work/', 'tmp/', '*.box',
-                     'core/', 'plugins/', 'ports/', 'src/', 'tools/', 'update/'],
-    rsync__args: ['--verbose', '--archive', '--delete', '--compress',
-                  '--copy-links', '--chmod=Du=rwx,Dgo=rx,Fu=rwx,Fgo=rx']
-  }
-  $nfs_opts   = { type: 'nfs', nfs_udp: false }
-  $sync_opts  = $sync_type == 'rsync' ? $rsync_opts : $nfs_opts
-
-  # Disable the default /vagrant share; mount our own.
+  # Disable the default /vagrant share; mount our own when a mechanism exists.
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
-  config.vm.synced_folder '.', $vagrant_mount_path, $sync_opts
+  if $sync_type == 'nfs'
+    config.vm.synced_folder '.', $vagrant_mount_path, type: 'nfs', nfs_udp: false
+  else
+    puts "==> Không gắn #{$vagrant_mount_path} từ host. Làm việc với mã nguồn"
+    puts "    bên trong guest qua SSH/SFTP: vagrant ssh-config"
+  end
 
   config.ssh.shell      = '/bin/sh'
   config.ssh.keep_alive = true
   config.vm.boot_timeout = 6000
 
-  # Hide the repository's .git directory inside NFS mounts (overmount with empty
-  # tmpfs). Ở chế độ rsync, .git đã nằm trong rsync__exclude nên không có gì để che.
-  config.vm.provision "shell", run: "always", inline: <<-SHELL
-    if [ -d "#{$vagrant_mount_path}/.git" ]; then
-      mount -t tmpfs tmpfs "#{$vagrant_mount_path}/.git"
-    fi
-  SHELL
+  # Ở chế độ nfs: che thư mục .git của repo bên trong mount (phủ tmpfs rỗng).
+  # Ở chế độ none: tạo sẵn thư mục để clone mã nguồn OPNsense vào đó.
+  if $sync_type == 'nfs'
+    config.vm.provision "shell", run: "always", inline: <<-SHELL
+      if [ -d "#{$vagrant_mount_path}/.git" ]; then
+        mount -t tmpfs tmpfs "#{$vagrant_mount_path}/.git"
+      fi
+    SHELL
+  else
+    config.vm.provision "shell", run: "always", inline: <<-SHELL
+      mkdir -p "#{$vagrant_mount_path}"
+    SHELL
+  end
 
   #
   # Network — LAN (static), WAN (bridge), OPT (dhcp), OPT (dhcp)
@@ -110,8 +110,8 @@ def opnsense_common(config)
   #
   config.vm.network 'private_network', ip: $virtual_machine_ip, auto_config: false
   opnsense_wan_network(config, $wan_bridge_dev)
-  config.vm.network 'private_network', type: 'dhcp'
-  config.vm.network 'private_network', type: 'dhcp'
+  config.vm.network 'private_network', ip: $opt1_ip, auto_config: false
+  config.vm.network 'private_network', ip: $opt2_ip, auto_config: false
 
   #
   # Provider-specific configuration (vagrant/<provider>.rb)
@@ -123,10 +123,21 @@ def opnsense_common(config)
   #
   config.vm.provision "file",  source: "files", destination: "files"
 
+  # bootstrap.sh được tải lên trước rồi mới chạy, thay cho provisioner `path:`
+  # chạy thẳng file vừa upload. Bước trung gian bỏ ký tự CR: working tree trên
+  # Windows vẫn có thể mang CRLF (editor lưu lại, hoặc file được tạo ngoài git),
+  # và /bin/sh chết ngay dòng đầu khi gặp CR.
+  config.vm.provision "file",  source: "bootstrap.sh", destination: "bootstrap.sh"
+
   config.vm.provision "shell", env: {
     "OPNSENSE_RELEASE"     => $opnsense_release,
     "VIRTUAL_MACHINE_IP"   => $virtual_machine_ip,
     "BOOTSTRAP_SCRIPT_URL" => $bootstrap_script_url,
     "NIC_PREFIX"           => $nic_prefix
-  }, path: "bootstrap.sh"
+  }, inline: <<-'SHELL'
+    set -e
+    cd /home/vagrant
+    tr -d '\r' < bootstrap.sh > bootstrap.lf.sh
+    sh bootstrap.lf.sh
+  SHELL
 end

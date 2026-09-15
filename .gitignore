@@ -2,7 +2,6 @@
 tmp/
 
 # OPNsense source tree, cloned into /var/vagrant from inside the guest.
-# Keep in sync with rsync__exclude in vagrant/common.rb.
 core/
 plugins/
 ports/

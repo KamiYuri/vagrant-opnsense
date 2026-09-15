@@ -20,6 +20,14 @@ fi
 : "${NIC_PREFIX:?Không xác định được tên card mạng trong guest}"
 echo "==> NIC_PREFIX = ${NIC_PREFIX}"
 
+# Các mảnh XML được nối thẳng vào config.xml, nên một ký tự CR lọt vào là giá
+# trị cấu hình sai. Chuẩn hoá tại chỗ, phòng trường hợp chúng rời host Windows
+# với kết thúc dòng CRLF.
+for f in files/*.xml; do
+    [ -f "$f" ] || continue
+    tr -d '\r' < "$f" > "$f.lf" && mv "$f.lf" "$f"
+done
+
 # Download the OPNsense bootstrap script from the update repo
 fetch -o opnsense-bootstrap.sh "${BOOTSTRAP_SCRIPT_URL}"
 

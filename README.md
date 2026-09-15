@@ -13,6 +13,7 @@ configuration required to locally test and develop features for OPNsense.
 - [Environment Configuration](#environment-configuration)
 - [Deployment (Getting Started)](#deployment-getting-started)
 - [Access and Workflow](#access-and-workflow)
+- [Editing on Windows](#editing-on-windows)
 - [Troubleshooting & Maintenance](#troubleshooting--maintenance)
 </details>
 
@@ -36,7 +37,7 @@ Five terms cover almost everything used here:
 | **Box** | The base image Vagrant starts from: `BKCS/FreeBSD-15.1-ZFS`, a plain FreeBSD install. OPNsense is layered on top afterwards. |
 | **Provider** | The hypervisor that actually runs the VM — Libvirt/KVM, VirtualBox, or VMware (see below). |
 | **Provisioner** | A script Vagrant executes *inside* the guest after boot. Here it is [`bootstrap.sh`](bootstrap.sh), which converts the FreeBSD box into an OPNsense appliance. |
-| **Synced folder** | A host directory mounted into the guest. This repository is mounted at `/var/vagrant`, so edits made on your host are visible in the VM immediately. |
+| **Synced folder** | A host directory mounted into the guest. On Linux and macOS this repository is mounted at `/var/vagrant` over NFS, so host edits are visible in the VM immediately. On Windows there is no workable mechanism, so nothing is mounted — see [Editing on Windows](#editing-on-windows). |
 | **`.vagrant/`** | Local, gitignored state: which VM belongs to this directory, which provider created it, the generated SSH key. It is managed for you — remove it through `vagrant destroy`, not by hand. |
 
 Day-to-day lifecycle:
@@ -170,11 +171,26 @@ every provider you plan to use.
 
 **For VMware Users:**
 - VMware Workstation Pro 17+ (Windows, Linux) or VMware Fusion (macOS)
-- The Vagrant VMware Utility (a separate download from the Vagrant site)
 - The `vagrant-vmware-desktop` plugin:
   ```bash
   vagrant plugin install vagrant-vmware-desktop
   ```
+- The [Vagrant VMware Utility](https://developer.hashicorp.com/vagrant/install/vmware) (v1.0.24), a
+  separate download — the plugin talks to VMware through this background service rather than
+  driving it directly. Windows ships as an MSI; Linux as `.deb`/`.rpm`.
+
+  Install VMware itself first: without it the service stops immediately after starting, which is the
+  most common failure. The installer registers the service and enables it at boot; confirm with
+  `Get-Service vagrant-vmware-utility` on Windows, and start it by hand from an administrator prompt
+  if needed:
+
+  ```powershell
+  net.exe start vagrant-vmware-utility
+  ```
+
+  The service listens on port 9922, with configuration and certificates under
+  `C:\ProgramData\HashiCorp\vagrant-vmware-desktop`. Restarting it clears most
+  "cannot reach the utility" errors from the plugin.
 
 ## Environment Configuration
 
@@ -189,7 +205,7 @@ Shared configuration lives in a single file, [`vagrant/common.rb`](vagrant/commo
 | `NIC_PREFIX` | Guest network interface name prefix. Derived from the provider (`vtnet` for virtio, `vmx` for vmxnet3); `bootstrap.sh` re-detects it inside the guest if empty. Set it only when a provider names interfaces unexpectedly. | provider-dependent |
 | `VM_MEMORY` | RAM for the guest, in MB. Applies to every provider. | `4096` |
 | `VM_CPUS` | Virtual CPUs for the guest. Applies to every provider. | `2` |
-| `SYNC_TYPE` | Synced-folder mechanism: `nfs` (two-way, needs an NFS server on the host) or `rsync` (one-way host → guest; push with `vagrant rsync`). | `rsync` on Windows, `nfs` elsewhere |
+| `SYNC_TYPE` | Synced-folder mechanism: `nfs` (two-way, needs an NFS server on the host) or `none` (nothing mounted; edit inside the guest over SSH/SFTP). | `none` on Windows, `nfs` elsewhere |
 | `$virtual_machine_ip` | The fixed IP address assigned to the LAN interface. Edit in `vagrant/common.rb`. | `192.168.56.56` |
 | `$vagrant_mount_path` | Absolute path inside the VM mapped to the host directory. Edit in `vagrant/common.rb`. | `/var/vagrant` |
 
@@ -267,11 +283,12 @@ Root-level access (`sudo`) via the `vagrant` user requires no password prompt by
 
 ### Development Workflow
 
-The root of this project folder is mirrored into the VM at `/var/vagrant`, so you can edit on the
-host and evaluate inside the guest immediately.
+On Linux and macOS the root of this project folder is mounted into the VM at `/var/vagrant` over
+NFS, so you can edit on the host and evaluate inside the guest immediately.
 
 To work on the OPNsense sources themselves, clone them **from inside the guest** into that same
-directory — they then land in your host filesystem too, and can be edited with host tools. See the
+directory. Under NFS they then land in your host filesystem too and can be edited with host tools;
+on Windows they stay inside the guest and are reached over SFTP. See the
 [OPNsense tools documentation](https://github.com/opnsense/tools) for details on the build system.
 
 ```sh
@@ -292,10 +309,60 @@ cd tools
 env ROOTDIR=/var/vagrant make update
 ```
 
-Those directories (`core/`, `plugins/`, `ports/`, `src/`, `tools/`, `update/`) are listed in both
-[`.gitignore`](.gitignore) and the `rsync__exclude` list in
-[`vagrant/common.rb`](vagrant/common.rb) — the latter matters, because they do not exist on the host
-side of the sync and `rsync --delete` would otherwise wipe them on the next `vagrant rsync`.
+Those directories (`core/`, `plugins/`, `ports/`, `src/`, `tools/`, `update/`) are listed in
+[`.gitignore`](.gitignore) so they never end up in this repository's history.
+
+### Editing on Windows
+
+Windows has no NFS server, and `vboxsf` does not work on FreeBSD, so `SYNC_TYPE` defaults to `none`
+there: nothing is mounted and `/var/vagrant` exists only inside the guest. Edit it in place over
+SSH/SFTP, which keeps a single copy of every file and leaves permissions and line endings alone.
+
+Use the [SFTP extension by Natizyskunk](https://marketplace.visualstudio.com/items?itemName=Natizyskunk.sftp)
+for VS Code. Vagrant already generates the key and prints the connection details:
+
+```powershell
+vagrant ssh-config
+```
+
+Take `Port` and `IdentityFile` from that output. Then open the repository folder in VS Code, run
+**SFTP: Config** from the command palette, and replace the generated `.vscode/sftp.json` with:
+
+```json
+{
+  "name": "opnsense-dev",
+  "host": "127.0.0.1",
+  "port": 2222,
+  "protocol": "sftp",
+  "username": "vagrant",
+  "privateKeyPath": ".vagrant/machines/default/virtualbox/private_key",
+  "remotePath": "/var/vagrant",
+  "uploadOnSave": true,
+  "useTempFile": false,
+  "openSsh": false
+}
+```
+
+The `virtualbox` segment follows the provider in use (`libvirt`, `vmware_desktop`), and the path is
+resolved against the folder open in VS Code. The **SFTP** view in the Explorer sidebar then browses
+`/var/vagrant`; a save writes straight back into the guest. `SFTP: Download Folder` pulls a
+host-side copy when one is wanted for searching, and `uploadOnSave` keeps it pushed back.
+
+A `vagrant destroy` and rebuild changes the port and the key, so `port` in `.vscode/sftp.json` has
+to be updated afterwards. That file is per-machine and is gitignored.
+
+VS Code's terminal runs on the host here, so `make mount` and `make install` are run through
+`vagrant ssh`.
+
+Changes to this repository itself are made on the host and take effect on the next `vagrant up`,
+`vagrant reload`, or `vagrant provision` — `bootstrap.sh` and `files/` are uploaded by the
+provisioner, not by a synced folder.
+
+Line endings need no attention. [`.gitattributes`](.gitattributes) checks every text file out with
+LF regardless of `core.autocrlf`, and the provisioner strips carriage returns anyway: `bootstrap.sh`
+is uploaded and piped through `tr -d '\r'` before `/bin/sh` sees it, and the script does the same
+for `files/*.xml` before merging them into `config.xml`. A file that picks up CRLF from an editor on
+the host still provisions correctly.
 
 ## Troubleshooting & Maintenance
 
