@@ -1,9 +1,8 @@
 # Configuration shared by every provider.
 #
-# Provider-specific pieces (the config.vm.provider block, the bridged-WAN
-# syntax, disk resizing) live in vagrant/<provider>.rb and are reached through
-# opnsense_provider_config / opnsense_wan_network, which the entry-point
-# Vagrantfile has already loaded by the time this runs.
+# Provider-specific pieces (the config.vm.provider block, disk resizing) live in
+# vagrant/<provider>.rb and are reached through opnsense_provider_config, which
+# the entry-point Vagrantfile has already loaded by the time this runs.
 #
 # All relative paths below resolve against the directory holding the
 # Vagrantfile (the repository root), not this file.
@@ -18,16 +17,7 @@ def opnsense_common(config)
   $opnsense_release   = ENV.fetch('OPNSENSE_RELEASE', '26.7')
 
   $virtual_machine_ip = '192.168.56.56'
-
-  # Hai cổng OPT để thử nghiệm. Mỗi cổng phải có dải riêng: provider VMware chỉ
-  # tạo mạng host-only riêng khi biết subnet, còn `type: 'dhcp'` làm cả hai rơi
-  # về vmnet1 mặc định và dùng chung một segment với nhau lẫn với máy ảo khác
-  # trên host. Địa chỉ ở đây chỉ dùng để chọn mạng phía host; `auto_config: false`
-  # giữ nguyên interface trong guest để OPNsense tự quản.
-  $opt1_ip = ENV.fetch('OPT1_IP', '192.168.57.56')
-  $opt2_ip = ENV.fetch('OPT2_IP', '192.168.58.56')
   $vagrant_mount_path = '/var/vagrant'
-  $wan_bridge_dev     = ENV.fetch('WAN_BRIDGE', '')
 
   # Tài nguyên cấp cho VM, dùng chung cho cả ba provider. Mặc định nhắm tới máy
   # cá nhân 16 GB RAM: 4 GB đủ cho OPNsense (khuyến nghị của dự án là 2-4 GB) mà
@@ -37,10 +27,9 @@ def opnsense_common(config)
   $vm_memory = Integer(ENV.fetch('VM_MEMORY', 4096))
   $vm_cpus   = Integer(ENV.fetch('VM_CPUS', 2))
 
-  # Tên card mạng trong guest phụ thuộc provider: virtio -> vtnet0..4 (libvirt,
-  # VirtualBox), vmxnet3 -> vmx0..4 (VMware). bootstrap.sh nhận giá trị này qua
-  # NIC_PREFIX và tự dò lại trong guest nếu để trống. Ép bằng NIC_PREFIX=... khi
-  # provider đặt tên card khác dự đoán.
+  # Tên card mạng trong guest: cả libvirt lẫn VirtualBox đều dùng virtio nên là
+  # vtnet0, vtnet1. bootstrap.sh nhận giá trị này qua NIC_PREFIX và tự dò lại
+  # trong guest nếu để trống. Ép bằng NIC_PREFIX=... khi guest đặt tên khác.
   $nic_prefix = ENV.fetch('NIC_PREFIX', opnsense_nic_prefix)
 
   # URL to fetch the opnsense-bootstrap.sh.in script from. Override to mirror
@@ -101,17 +90,17 @@ def opnsense_common(config)
   end
 
   #
-  # Network — LAN (static), WAN (bridge), OPT (dhcp), OPT (dhcp)
+  # Network — đúng hai card, không cầu nối ra mạng vật lý
   #
-  # Declaration order IS the guest interface order, and bootstrap.sh hardcodes
-  # that mapping (vtnet1=LAN, vtnet2=WAN, vtnet3/4=OPT). Do not reorder.
-  # Both providers attach their own management NAT ahead of these as vtnet0;
-  # bootstrap.sh wires it into OPNsense as OPT1 "MGMT".
+  #   <prefix>0  NAT của provider, do provider tự gắn vào vị trí đầu.
+  #              bootstrap.sh nối nó vào OPNsense thành WAN (DHCP); đây cũng là
+  #              đường mà `vagrant ssh` đi.
+  #   <prefix>1  host-only, LAN tĩnh $virtual_machine_ip, nơi đặt Web UI.
+  #
+  # Thứ tự khai báo quyết định thứ tự card trong guest và bootstrap.sh bám theo
+  # đúng thứ tự đó — không đảo, không chèn thêm.
   #
   config.vm.network 'private_network', ip: $virtual_machine_ip, auto_config: false
-  opnsense_wan_network(config, $wan_bridge_dev)
-  config.vm.network 'private_network', ip: $opt1_ip, auto_config: false
-  config.vm.network 'private_network', ip: $opt2_ip, auto_config: false
 
   #
   # Provider-specific configuration (vagrant/<provider>.rb)

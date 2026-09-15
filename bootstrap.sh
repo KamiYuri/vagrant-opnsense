@@ -8,9 +8,9 @@ set -e
 : "${OPNSENSE_RELEASE:?OPNSENSE_RELEASE must be set}"
 : "${VIRTUAL_MACHINE_IP:?VIRTUAL_MACHINE_IP must be set}"
 
-# Tiền tố tên card mạng trong guest. Vagrantfile truyền vào theo provider
-# (virtio -> vtnet, vmxnet3 -> vmx). Nếu biến trống thì dò trực tiếp từ hệ
-# thống, lấy card vật lý đầu tiên mà ifconfig liệt kê.
+# Tiền tố tên card mạng trong guest. Vagrantfile truyền vào theo provider;
+# libvirt và VirtualBox đều dùng virtio nên giá trị là vtnet. Biến trống thì dò
+# trực tiếp từ hệ thống, lấy card vật lý đầu tiên mà ifconfig liệt kê.
 NIC_PREFIX="${NIC_PREFIX:-}"
 if [ -z "${NIC_PREFIX}" ]; then
     NIC_PREFIX=$(ifconfig -l | tr ' ' '\n' \
@@ -59,31 +59,15 @@ fi
 # Configure network interfaces
 # =============================================
 
-# Set correct interface names. ${NIC_PREFIX} là vtnet với libvirt/VirtualBox
-# (virtio) và vmx với VMware (vmxnet3).
-# NIC layout (cả ba provider đều đặt NAT quản trị của mình lên vị trí đầu):
-#   ${NIC_PREFIX}0 = provider mgmt NAT -> OPNsense OPT1 "MGMT" (DHCP, cho `vagrant ssh`)
-#   ${NIC_PREFIX}1 = LAN  static 192.168.56.56
-#   ${NIC_PREFIX}2 = WAN  bridge to host's physical LAN
-#   ${NIC_PREFIX}3 = OPT  dhcp playground
-#   ${NIC_PREFIX}4 = OPT  dhcp playground
+# Set correct interface names. ${NIC_PREFIX} là vtnet với cả libvirt lẫn
+# VirtualBox vì hai provider đều gắn NIC virtio.
+# Máy ảo chỉ có hai card, cả hai provider đều đặt NAT của mình lên vị trí đầu:
+#   ${NIC_PREFIX}0 = NAT của provider -> WAN (DHCP). `vagrant ssh` đi đường này,
+#                    và đây cũng là lối ra Internet để pkg tải gói.
+#   ${NIC_PREFIX}1 = host-only       -> LAN tĩnh ${VIRTUAL_MACHINE_IP}, Web UI.
+# config.xml của OPNsense đánh dấu LAN là mismatch0 và WAN là mismatch1.
 sed -i '' -e "s/mismatch0/${NIC_PREFIX}1/" /usr/local/etc/config.xml
-sed -i '' -e "s/mismatch1/${NIC_PREFIX}2/" /usr/local/etc/config.xml
-
-# Add OPNsense OPT1 ("MGMT") bound to ${NIC_PREFIX}0 so the provider's NAT lease
-# is usable for `vagrant ssh` once WAN is moved off it. Mảnh XML ghi sẵn vtnet0,
-# đổi lại theo provider trước khi chèn.
-sed -i '' -e "s/<if>vtnet0<\/if>/<if>${NIC_PREFIX}0<\/if>/" files/opt_mgmt.xml
-sed -i '' -e '/<\/lan>/r files/opt_mgmt.xml' /usr/local/etc/config.xml
-
-# Register a dynamic gateway on MGMT. It backs the provider's management NAT,
-# which is the path `vagrant ssh` uses — default Internet traffic still egresses
-# via the bridged WAN.
-# The closing </opnsense> is dropped first and re-appended from files/close.xml,
-# which must therefore stay the LAST appended fragment.
-sed -i '' -e '/<\/opnsense>/d' /usr/local/etc/config.xml
-cat files/mgmt_gw.xml >>/usr/local/etc/config.xml
-cat files/close.xml >>/usr/local/etc/config.xml
+sed -i '' -e "s/mismatch1/${NIC_PREFIX}0/" /usr/local/etc/config.xml
 
 # Remove IPv6 configuration from WAN
 sed -i '' -e '/<ipaddrv6>dhcp6<\/ipaddrv6>/d' /usr/local/etc/config.xml

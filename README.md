@@ -22,9 +22,9 @@ configuration required to locally test and develop features for OPNsense.
 ## Overview
 
 The primary goal of this Vagrant environment is to abstract away the complexity of configuring a
-reliable, isolated FreeBSD-based OPNsense instance for software development. By using Libvirt (KVM),
-VirtualBox, or VMware as the provider, developers receive a uniform testing environment regardless of
-their host system OS.
+reliable, isolated FreeBSD-based OPNsense instance for software development. By using VirtualBox or
+Libvirt (KVM) as the provider, developers receive a uniform testing environment regardless of their
+host system OS.
 
 ## Vagrant Primer
 
@@ -35,7 +35,7 @@ Five terms cover almost everything used here:
 | Term | What it means in this project |
 | --- | --- |
 | **Box** | The base image Vagrant starts from: `BKCS/FreeBSD-15.1-ZFS`, a plain FreeBSD install. OPNsense is layered on top afterwards. |
-| **Provider** | The hypervisor that actually runs the VM — Libvirt/KVM, VirtualBox, or VMware (see below). |
+| **Provider** | The hypervisor that actually runs the VM — VirtualBox or Libvirt/KVM (see below). |
 | **Provisioner** | A script Vagrant executes *inside* the guest after boot. Here it is [`bootstrap.sh`](bootstrap.sh), which converts the FreeBSD box into an OPNsense appliance. |
 | **Synced folder** | A host directory mounted into the guest. On Linux and macOS this repository is mounted at `/var/vagrant` over NFS, so host edits are visible in the VM immediately. On Windows there is no workable mechanism, so nothing is mounted — see [Editing on Windows](#editing-on-windows). |
 | **`.vagrant/`** | Local, gitignored state: which VM belongs to this directory, which provider created it, the generated SSH key. It is managed for you — remove it through `vagrant destroy`, not by hand. |
@@ -56,17 +56,16 @@ Every command is scoped to the directory holding the `Vagrantfile`, so run them 
 
 ### Which provider?
 
-A **provider** is the hypervisor Vagrant drives. The VM description is identical either way; only the plumbing differs, which is why provider-specific settings are isolated in [`vagrant/libvirt.rb`](vagrant/libvirt.rb), [`vagrant/virtualbox.rb`](vagrant/virtualbox.rb) and [`vagrant/vmware.rb`](vagrant/vmware.rb).
+A **provider** is the hypervisor Vagrant drives. The VM description is identical either way; only the plumbing differs, which is why provider-specific settings are isolated in [`vagrant/virtualbox.rb`](vagrant/virtualbox.rb) and [`vagrant/libvirt.rb`](vagrant/libvirt.rb).
 
-| | Libvirt / KVM (default) | VirtualBox | VMware Desktop |
-| --- | --- | --- | --- |
-| Host OS | Linux only | Linux, Windows, macOS (Intel) | Linux, Windows, macOS |
-| Nature | Virtualization built into the Linux kernel | Standalone application installed on top of the OS | Standalone application installed on top of the OS |
-| Performance | Faster; near-native I/O through virtio | Slower and heavier on the host | Fast; paravirtualized vmxnet3 NICs |
-| Required plugin | `vagrant-libvirt` | `vagrant-disksize` (otherwise the disk stays at the box default instead of 64 GB) | `vagrant-vmware-desktop` + Vagrant VMware Utility |
-| Bridged WAN | Picks an interface automatically, or set `WAN_BRIDGE` | Prompts you to choose one unless `WAN_BRIDGE` is set | Picks an interface automatically, or set `WAN_BRIDGE` |
-| Guest NIC names | `vtnet0`..`vtnet4` (virtio) | `vtnet0`..`vtnet4` (NICs forced to virtio) | `vmx0`..`vmx4` (vmxnet3) |
-| Disk resizing | `64` GB via `machine_virtual_size` | `64` GB via `vagrant-disksize` | Not supported — box default is kept |
+| | VirtualBox (default) | Libvirt / KVM |
+| --- | --- | --- |
+| Host OS | Linux, Windows, macOS (Intel) | Linux only |
+| Nature | Standalone application installed on top of the OS | Virtualization built into the Linux kernel |
+| Performance | Slower and heavier on the host | Faster; near-native I/O through virtio |
+| Required plugin | `vagrant-disksize` (otherwise the disk stays at the box default instead of 64 GB) | `vagrant-libvirt` |
+| Guest NIC names | `vtnet0`, `vtnet1` (NICs forced to virtio) | `vtnet0`, `vtnet1` (virtio) |
+| Disk resizing | `64` GB via `vagrant-disksize` | `64` GB via `machine_virtual_size` |
 
 The defaults target a personal machine with 16 GB of RAM: 4 GB and 2 vCPUs for the guest, which
 leaves the host comfortable. OPNsense itself is happy with 2-4 GB; raise both temporarily with
@@ -76,7 +75,9 @@ disk is sparse — it grows as used, not up front.
 The box uses ZFS, so enlarging the virtual disk does not enlarge the pool by itself: after a
 resize, run `gpart resize` on the partition and `zpool online -e zroot <dev>` inside the guest.
 
-Choose Libvirt on Linux: it is the default and the better-tested path here. Choose VirtualBox or VMware on Windows or macOS, or wherever KVM is unavailable — for instance inside a VM that does not expose nested virtualization. Select one per command with `PROVIDER=virtualbox vagrant up`.
+VirtualBox is the default because it runs everywhere. On Linux, switch to Libvirt with
+`PROVIDER=libvirt vagrant up` — KVM lives in the kernel, so disk and network I/O are markedly
+faster than VirtualBox on the same machine.
 
 They cannot share state: `.vagrant/` records which provider built the machine, so switching providers requires `vagrant destroy -f` first.
 
@@ -118,9 +119,8 @@ This project uses a prepared FreeBSD 15.1 (ZFS) box that is **not** published on
 
 | Provider | Box file |
 | --- | --- |
-| Libvirt / KVM | [FreeBSD-15.1-ZFS (libvirt)](https://drive.google.com/file/d/1TtTR1gZeYQHqSiYWipykPuZviBo_0Dnz/view?usp=drive_link) |
 | VirtualBox | [FreeBSD-15.1-ZFS (virtualbox)](https://drive.google.com/file/d/1NtG_MhTECYVL-aQN5bNEeH-jkEu0P99W/view?usp=drive_link) |
-| VMware Desktop | [FreeBSD-15.1-ZFS (vmware)](https://drive.google.com/file/d/1NZwfUyubrAUnc2spcZBZJOxCKrZ-CIRE/view?usp=drive_link) |
+| Libvirt / KVM | [FreeBSD-15.1-ZFS (libvirt)](https://drive.google.com/file/d/1TtTR1gZeYQHqSiYWipykPuZviBo_0Dnz/view?usp=drive_link) |
 
 Download through a browser. Google Drive answers these links with a confirmation page rather than
 the file itself, so handing the link straight to `vagrant box add <url>` does not work. A file this
@@ -140,8 +140,7 @@ On Windows, quote the path if it contains spaces:
 vagrant box add --name BKCS/FreeBSD-15.1-ZFS "C:\Users\<you>\Downloads\FreeBSD-15.1-ZFS.box"
 ```
 
-Add `--provider <libvirt|virtualbox|vmware_desktop>` if Vagrant cannot work out the provider from
-the file itself.
+Add `--provider <virtualbox|libvirt>` if Vagrant cannot work out the provider from the file itself.
 
 **3. Confirm it landed**
 
@@ -163,46 +162,28 @@ every provider you plan to use.
   vagrant plugin install vagrant-disksize
   ```
 
+  Install this one only where VirtualBox is actually used. `vagrant-disksize` 0.1.3 builds a
+  VirtualBox driver as soon as Vagrant loads its `machine_action_up` hook, before looking at which
+  provider is in play, so on a host without `VBoxManage` it makes every `vagrant up` fail with
+  "Vagrant could not detect VirtualBox!" — including runs under libvirt. Remove it with
+  `vagrant plugin uninstall vagrant-disksize`.
+
 **For Libvirt (KVM) Users:**
 - The `vagrant-libvirt` plugin:
   ```bash
   vagrant plugin install vagrant-libvirt
   ```
 
-**For VMware Users:**
-- VMware Workstation Pro 17+ (Windows, Linux) or VMware Fusion (macOS)
-- The `vagrant-vmware-desktop` plugin:
-  ```bash
-  vagrant plugin install vagrant-vmware-desktop
-  ```
-- The [Vagrant VMware Utility](https://developer.hashicorp.com/vagrant/install/vmware) (v1.0.24), a
-  separate download — the plugin talks to VMware through this background service rather than
-  driving it directly. Windows ships as an MSI; Linux as `.deb`/`.rpm`.
-
-  Install VMware itself first: without it the service stops immediately after starting, which is the
-  most common failure. The installer registers the service and enables it at boot; confirm with
-  `Get-Service vagrant-vmware-utility` on Windows, and start it by hand from an administrator prompt
-  if needed:
-
-  ```powershell
-  net.exe start vagrant-vmware-utility
-  ```
-
-  The service listens on port 9922, with configuration and certificates under
-  `C:\ProgramData\HashiCorp\vagrant-vmware-desktop`. Restarting it clears most
-  "cannot reach the utility" errors from the plugin.
-
 ## Environment Configuration
 
-Shared configuration lives in a single file, [`vagrant/common.rb`](vagrant/common.rb). Provider-specific settings live in [`vagrant/libvirt.rb`](vagrant/libvirt.rb), [`vagrant/virtualbox.rb`](vagrant/virtualbox.rb) and [`vagrant/vmware.rb`](vagrant/vmware.rb); the root `Vagrantfile` only dispatches between them and holds no settings.
+Shared configuration lives in a single file, [`vagrant/common.rb`](vagrant/common.rb). Provider-specific settings live in [`vagrant/virtualbox.rb`](vagrant/virtualbox.rb) and [`vagrant/libvirt.rb`](vagrant/libvirt.rb); the root `Vagrantfile` only dispatches between them and holds no settings.
 
 | Variable | Description | Default Value |
 | --- | --- | --- |
-| `PROVIDER` | Virtualization provider, read by the entry-point `Vagrantfile`: `libvirt` (alias `kvm`), `virtualbox` (alias `vbox`), or `vmware`. Any other value aborts `vagrant up`. | `libvirt` |
+| `PROVIDER` | Virtualization provider, read by the entry-point `Vagrantfile`: `virtualbox` (alias `vbox`) or `libvirt` (alias `kvm`). Any other value aborts `vagrant up`. | `virtualbox` |
 | `OPNSENSE_RELEASE` | The target OPNsense version, passed to `opnsense-bootstrap -r`. The core branch follows from it (`26.7` → `stable/26.7`). | `26.7` |
 | `BOOTSTRAP_SCRIPT_URL` | Absolute URL of `opnsense-bootstrap.sh.in`. Set this to mirror the bootstrap script on an internal HTTP server. | `https://raw.githubusercontent.com/opnsense/update/master/src/bootstrap/opnsense-bootstrap.sh.in` |
-| `WAN_BRIDGE` | Host interface that the WAN NIC bridges onto (e.g. `eth0`, `wlan0`, `br0`). Leave empty to let Libvirt/VMware auto-select or VirtualBox prompt at `vagrant up`. | empty |
-| `NIC_PREFIX` | Guest network interface name prefix. Derived from the provider (`vtnet` for virtio, `vmx` for vmxnet3); `bootstrap.sh` re-detects it inside the guest if empty. Set it only when a provider names interfaces unexpectedly. | provider-dependent |
+| `NIC_PREFIX` | Guest network interface name prefix. Both providers use virtio, so it is `vtnet`; `bootstrap.sh` re-detects it inside the guest if empty. Set it only when the guest names interfaces unexpectedly. | `vtnet` |
 | `VM_MEMORY` | RAM for the guest, in MB. Applies to every provider. | `4096` |
 | `VM_CPUS` | Virtual CPUs for the guest. Applies to every provider. | `2` |
 | `SYNC_TYPE` | Synced-folder mechanism: `nfs` (two-way, needs an NFS server on the host) or `none` (nothing mounted; edit inside the guest over SSH/SFTP). | `none` on Windows, `nfs` elsewhere |
@@ -211,20 +192,24 @@ Shared configuration lives in a single file, [`vagrant/common.rb`](vagrant/commo
 
 ### Network Topology
 
-The virtual machine is provisioned with 5 network interfaces. Guest interface order is the same for every provider (provider-managed NAT first, then Vagrantfile declarations in order). Names are `vtnet*` under Libvirt/VirtualBox and `vmx*` under VMware:
+The virtual machine is provisioned with exactly two network interfaces. Guest interface order is the
+same for both providers (provider-managed NAT first, then the Vagrantfile declaration). Both attach
+virtio NICs, so the guest names them `vtnet*`:
 
-| Guest NIC | Role     | Provided by                                                 |
-| --------- | -------- | ----------------------------------------------------------- |
-| `vtnet0`  | **MGMT** | Provider-managed NAT (libvirt `vagrant-libvirt` / VBox NAT / VMware vmnet8) — `vagrant ssh` lands here; wired into OPNsense as OPT1 "MGMT" (DHCP). |
-| `vtnet1`  | **LAN**  | Host-only/private network, static `192.168.56.56`. Web UI lives here. |
-| `vtnet2`  | **WAN**  | Bridge to the host's physical LAN (`public_network`). Override the bridge device with `WAN_BRIDGE=<iface>`. Receives DHCP from the upstream LAN — reachable from other machines on that LAN. |
-| `vtnet3`  | OPT      | Private DHCP. Reserved for custom internal routing and testing. |
-| `vtnet4`  | OPT      | Private DHCP. Reserved for custom internal routing and testing. |
+| Guest NIC | Role    | Provided by                                                 |
+| --------- | ------- | ----------------------------------------------------------- |
+| `vtnet0`  | **WAN** | Provider-managed NAT (VirtualBox NAT / libvirt `vagrant-libvirt`). Takes DHCP from the provider, carries outbound traffic for `pkg`, and is where `vagrant ssh` lands. |
+| `vtnet1`  | **LAN** | Host-only/private network, static `192.168.56.56`. Web UI lives here. |
 
-* **VirtualBox:** LAN relies on the host-only IP range `192.168.56.0/21`. Avoid using `.1`, as it is reserved. If `WAN_BRIDGE` is unset, VirtualBox will prompt interactively for the bridge interface.
-* **Libvirt:** Keeps the dedicated management network (`vagrant-libvirt`) separate from WAN traffic — `vagrant ssh` always uses the management NAT, never the bridged WAN.
+Nothing is bridged onto the physical network, so the appliance never appears on the office LAN and
+its DHCP server stays confined to the host-only segment.
 
-A dynamic gateway `MGMT_GW` ([`files/mgmt_gw.xml`](files/mgmt_gw.xml)) is registered on the MGMT interface, since it backs the management NAT that `vagrant ssh` uses. Default Internet traffic still egresses via the bridged WAN.
+`bootstrap.sh` deletes `blockpriv` from the WAN interface — without that, OPNsense would drop the
+provider's RFC1918 NAT range and `vagrant ssh` could not reach the guest. SSH is opened with a
+floating pass rule from [`files/filter.xml`](files/filter.xml) for the same reason.
+
+* **VirtualBox:** LAN relies on the host-only IP range `192.168.56.0/21`. Avoid using `.1`, as it is reserved.
+* **Libvirt:** the LAN network is created on demand for the `192.168.56.0/24` subnet.
 
 ## Deployment (Getting Started)
 
@@ -234,29 +219,27 @@ The repository layout:
 | ------------------------- | ------------------------------------------------------------- |
 | `Vagrantfile`             | Entry point. Dispatch only — selects the provider, no settings. |
 | `vagrant/common.rb`       | All configuration shared by every provider.                     |
-| `vagrant/libvirt.rb`      | Libvirt/KVM provider block and bridged-WAN syntax.              |
 | `vagrant/virtualbox.rb`   | VirtualBox provider block, virtio NICs, disk resizing.          |
-| `vagrant/vmware.rb`       | VMware Desktop provider block, vmxnet3 NICs.                    |
+| `vagrant/libvirt.rb`      | Libvirt/KVM provider block.                                     |
 | `bootstrap.sh`            | In-guest provisioner: runs `opnsense-bootstrap.sh`, then rewrites `config.xml`. |
 | `files/`                  | XML fragments merged into OPNsense's `config.xml` during provisioning. |
 
-`Vagrantfile` picks the provider from the `PROVIDER` environment variable (default: `libvirt`; `kvm`, `vbox` and the `vmware_*` spellings are accepted aliases) and sets `VAGRANT_DEFAULT_PROVIDER` accordingly, so no `--provider=` flag is needed.
+`Vagrantfile` picks the provider from the `PROVIDER` environment variable (default: `virtualbox`; `vbox` and `kvm` are accepted aliases) and sets `VAGRANT_DEFAULT_PROVIDER` accordingly, so no `--provider=` flag is needed. It prints the resolved provider as `==> PROVIDER = ...` on every run.
 
 > **Before the first `vagrant up`:** register the base box as described under
 > [Base Box](#base-box). Vagrant will not download it on its own, and `vagrant up` fails with
 > "Box 'BKCS/FreeBSD-15.1-ZFS' could not be found" until it is added.
 
-**Deploy via Libvirt (KVM) — default:**
+**Deploy via VirtualBox — default:**
 ```bash
 vagrant up
 # or, equivalently:
-PROVIDER=libvirt vagrant up
+PROVIDER=virtualbox vagrant up
 ```
 
-**Deploy via VirtualBox or VMware:**
+**Deploy via Libvirt (KVM), Linux only:**
 ```bash
-PROVIDER=virtualbox vagrant up
-PROVIDER=vmware vagrant up
+PROVIDER=libvirt vagrant up
 ```
 
 > **Note**: During the initial deployment, the virtual machine will gracefully halt itself after the bootstrap completes. **You must issue a second `vagrant up`** immediately afterward to bring the instance back online.
@@ -343,7 +326,7 @@ Take `Port` and `IdentityFile` from that output. Then open the repository folder
 }
 ```
 
-The `virtualbox` segment follows the provider in use (`libvirt`, `vmware_desktop`), and the path is
+The `virtualbox` segment follows the provider in use (`virtualbox` or `libvirt`), and the path is
 resolved against the folder open in VS Code. The **SFTP** view in the Explorer sidebar then browses
 `/var/vagrant`; a save writes straight back into the guest. `SFTP: Download Folder` pulls a
 host-side copy when one is wanted for searching, and `uploadOnSave` keeps it pushed back.
@@ -382,5 +365,5 @@ inside the guest with an ABI mismatch, the base box needs to be changed alongsid
 To completely destroy the environment and re-sync from scratch, execute:
 ```bash
 vagrant destroy -f
-PROVIDER=<libvirt|virtualbox|vmware> vagrant up
+PROVIDER=<virtualbox|libvirt> vagrant up
 ```
