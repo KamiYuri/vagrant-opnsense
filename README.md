@@ -14,8 +14,8 @@ configuration required to locally test and develop features for OPNsense.
 - [Deployment (Getting Started)](#deployment-getting-started)
 - [Access and Workflow](#access-and-workflow)
 - [File Permissions](#file-permissions)
+- [Live mode: mount or install](#live-mode-mount-or-install)
 - [sudo and the union mount](#sudo-and-the-union-mount)
-- [Line endings in core](#line-endings-in-core)
 - [Editing on Windows](#editing-on-windows)
 - [Troubleshooting & Maintenance](#troubleshooting--maintenance)
 </details>
@@ -289,8 +289,7 @@ with separate histories:
 Clone it once, from the working directory:
 
 ```bash
-git clone --config core.autocrlf=false --branch stable/26.7 \
-    https://github.com/opnsense/core.git core
+git clone --branch stable/26.7 https://github.com/opnsense/core.git core
 ```
 
 Pin it to the release the VM runs: `stable/26.7` matches the `OPNSENSE_RELEASE` default. Neither
@@ -317,11 +316,24 @@ vagrant ssh
 sudo sh
 
 cd /var/vagrant/core
-make mount      # overlay src/ onto /usr/local and restart configd
+make install    # copy src/ into /usr/local and flush the template cache
 make collect    # pull changes made on the appliance back into the tree
-make umount     # drop the overlay
-make install    # a real install, to test it the way a release behaves
 ```
+
+`make install` is the live loop. Its recipe ends with a branch guarded by
+`exists(${LOCALBASE}/opnsense/www/index.php)` and commented *"try to update the current system if it
+looks like one"*, which touches `index.php` and runs `pluginctl -cq cache_flush` — the tree is
+copied in and the PHP and Volt caches are dropped, so a reload of the web UI shows the change. The
+copy is a `tar` pipe over 2603 files and 40 MB, a second or two on ZFS.
+
+Restart the backend when you change what it runs:
+
+```sh
+service configd restart
+```
+
+`make mount` is the other option, and [Live mode: mount or install](#live-mode-mount-or-install)
+covers when it earns its cost.
 
 See the [OPNsense tools documentation](https://github.com/opnsense/tools) for the rest of the build
 system.
@@ -346,6 +358,38 @@ fine at `644`.
 
 Do not set `filePerm` or `dirPerm` instead. Both force one mode onto everything and switch mode
 preservation off entirely.
+
+### Live mode: mount or install
+
+`make mount` overlays `src/` onto `/usr/local` with `mount_unionfs`, so an edit is live the moment
+it lands — no copy step at all. `make install` copies the tree in and flushes the caches instead.
+
+The OPNsense [Development Workflow](https://docs.opnsense.org/development/workflow.html) page
+documents `make mount` and nothing else, and one paragraph of it no longer holds: it says the boot
+sequence mounts a repository left in `/root/core` "as early as possible". No such hook exists in
+26.7 — the only `mount_unionfs` the shipped tree contains is in `src/etc/rc`, for live media. The
+targets themselves are fine: `mount` and `umount` are byte-identical between `stable/26.7` and
+`master`, so neither is deprecated in the code.
+
+What the union costs in this environment is everything in the two sections above: the source tree
+becomes the upper layer of `/usr/local`, so its ownership and its line endings become the running
+system's, `work` has to exist, and writes copy up into the tree. `make install` has none of that —
+files are copied as ordinary files and survive a reboot, which is also what a release does.
+
+So: `make install` for the normal loop, and `make mount` when you are iterating on one PHP or Volt
+file often enough that a second per save is worth the caveats. Never leave a mount active while
+doing anything else; `make umount` first.
+
+One thing `make install` inherits from the tree: `install-${TARGET}` runs
+`tar -C ${TREE} -cf - . | tar -C <dest> -xf -`, and bsdtar extracting as root restores the owner
+recorded in the archive. The synced tree belongs to `vagrant`, so parts of `/usr/local` end up
+`vagrant`-owned — this time permanently rather than only while mounted. The one path where that
+breaks something is `sudoers.d`, and it is already excluded from the sync, so nothing else has shown
+a symptom. If something ownership-sensitive ever does:
+
+```sh
+chown -R root:wheel /usr/local/etc
+```
 
 ### sudo and the union mount
 
@@ -375,46 +419,6 @@ sudo -l
 
 The directory has to be `root:wheel`. If `sudo` is already refusing, `make umount` in
 `/var/vagrant/core` drops the overlay and gets a working shell back.
-
-### Line endings in core
-
-`opnsense/core` ships no `.gitattributes`, and Git for Windows installs with `core.autocrlf=true`.
-Cloning core on Windows with the default therefore rewrites every text file to CRLF, the sync copies
-those bytes into the guest unchanged, and the carriage returns end up in files FreeBSD executes.
-
-308 files in core start with a shebang; 60 of them sit under `src/etc` and reach `/usr/local/etc`
-through the union mount. A `\r` in the shebang makes the kernel look for an interpreter named
-`python3\r`, so the script fails with a message that names a binary you can see is installed.
-
-The 109 configd templates are worse, because `+TARGETS` sends three of them outside `/usr/local`:
-
-```
-sshd.pam:/etc/pam.d/sshd
-system.pam:/etc/pam.d/system
-csh.cshrc:/etc/csh.cshrc
-```
-
-configd re-renders those whenever it restarts, which `make mount` does. A CRLF template writes a
-CRLF `/etc/pam.d/sshd`, and a broken pam stack means `vagrant ssh` stops working — with the source
-of the breakage sitting on the host, where the VM cannot be reached to fix it.
-
-The clone command above sets `core.autocrlf=false` for that one repository, which is enough. For a
-clone made before this was documented:
-
-```bash
-git -C core config core.autocrlf false
-git -C core rm --cached -r .
-git -C core reset --hard
-```
-
-Check it in the guest whenever something behaves oddly after a sync:
-
-```sh
-head -1 /usr/local/etc/rc.bootup | od -c | head -1
-```
-
-A `\r` before the `\n` means the tree came across with CRLF. Editors count too: set
-`"files.eol": "\n"` in the workspace settings so files you create there match the rest of the tree.
 
 ### Editing on Windows
 
@@ -553,12 +557,11 @@ Changes to this repository itself are made on the host and take effect on the ne
 `vagrant reload`, or `vagrant provision` — `bootstrap.sh` and `files/` are uploaded by the
 provisioner, not by a synced folder.
 
-Line endings need no attention **in this repository**. [`.gitattributes`](.gitattributes) checks
-every text file out with LF regardless of `core.autocrlf`, and the provisioner strips carriage
-returns anyway: `bootstrap.sh` is uploaded and piped through `tr -d '\r'` before `/bin/sh` sees it,
-and the script does the same for `files/*.xml` before merging them into `config.xml`.
-
-`core` has neither protection — see [Line endings in core](#line-endings-in-core).
+Line endings need no attention. [`.gitattributes`](.gitattributes) checks every text file out with
+LF regardless of `core.autocrlf`, and the provisioner strips carriage returns anyway: `bootstrap.sh`
+is uploaded and piped through `tr -d '\r'` before `/bin/sh` sees it, and the script does the same
+for `files/*.xml` before merging them into `config.xml`. A file that picks up CRLF from an editor on
+the host still provisions correctly.
 
 ## Troubleshooting & Maintenance
 
@@ -587,10 +590,6 @@ make mount
 `/usr/local/etc/sudoers.d` is coming from the source tree and is not root-owned — see
 [sudo and the union mount](#sudo-and-the-union-mount). `make umount` restores it immediately; the
 lasting fix is the `ignore` entry and the tmpfs mask, both already in place on a current checkout.
-
-**A script in the guest fails naming an interpreter that exists**
-`env: python3\r: No such file or directory`, or an rc script reported as not found. The tree carried
-CRLF across — see [Line endings in core](#line-endings-in-core).
 
 **Changing the OPNsense release**
 Set `OPNSENSE_RELEASE` (e.g. `OPNSENSE_RELEASE=26.1 vagrant up`). The core branch follows
