@@ -13,6 +13,9 @@ configuration required to locally test and develop features for OPNsense.
 - [Environment Configuration](#environment-configuration)
 - [Deployment (Getting Started)](#deployment-getting-started)
 - [Access and Workflow](#access-and-workflow)
+- [File Permissions](#file-permissions)
+- [sudo and the union mount](#sudo-and-the-union-mount)
+- [Line endings in core](#line-endings-in-core)
 - [Editing on Windows](#editing-on-windows)
 - [Troubleshooting & Maintenance](#troubleshooting--maintenance)
 </details>
@@ -37,7 +40,7 @@ Five terms cover almost everything used here:
 | **Box** | The base image Vagrant starts from: `BKCS/FreeBSD-15.1-ZFS`, a plain FreeBSD install. OPNsense is layered on top afterwards. |
 | **Provider** | The hypervisor that actually runs the VM — VirtualBox or Libvirt/KVM (see below). |
 | **Provisioner** | A script Vagrant executes *inside* the guest after boot. Here it is [`bootstrap.sh`](bootstrap.sh), which converts the FreeBSD box into an OPNsense appliance. |
-| **Synced folder** | A host directory mounted into the guest. On Linux and macOS this repository is mounted at `/var/vagrant` over NFS, so host edits are visible in the VM immediately. On Windows there is no workable mechanism, so nothing is mounted — see [Editing on Windows](#editing-on-windows). |
+| **Synced folder** | A host directory made available in the guest. The OPNsense sources live on the host in `core/` and reach the VM under `/var/vagrant`. On Linux and macOS that is an NFS mount, so a host edit is visible in the guest immediately. Windows has no NFS server, so VS Code uploads on save instead — see [Editing on Windows](#editing-on-windows). |
 | **`.vagrant/`** | Local, gitignored state: which VM belongs to this directory, which provider created it, the generated SSH key. It is managed for you — remove it through `vagrant destroy`, not by hand. |
 
 Day-to-day lifecycle:
@@ -186,7 +189,7 @@ Shared configuration lives in a single file, [`vagrant/common.rb`](vagrant/commo
 | `NIC_PREFIX` | Guest network interface name prefix. Both providers use virtio, so it is `vtnet`; `bootstrap.sh` re-detects it inside the guest if empty. Set it only when the guest names interfaces unexpectedly. | `vtnet` |
 | `VM_MEMORY` | RAM for the guest, in MB. Applies to every provider. | `4096` |
 | `VM_CPUS` | Virtual CPUs for the guest. Applies to every provider. | `2` |
-| `SYNC_TYPE` | Synced-folder mechanism: `nfs` (two-way, needs an NFS server on the host) or `none` (nothing mounted; edit inside the guest over SSH/SFTP). | `none` on Windows, `nfs` elsewhere |
+| `SYNC_TYPE` | How the host tree reaches the guest: `nfs` (two-way mount, needs an NFS server on the host) or `none` (Vagrant mounts nothing; VS Code uploads over SFTP). | `none` on Windows, `nfs` elsewhere |
 | `$virtual_machine_ip` | The fixed IP address assigned to the LAN interface. Edit in `vagrant/common.rb`. | `192.168.56.56` |
 | `$vagrant_mount_path` | Absolute path inside the VM mapped to the host directory. Edit in `vagrant/common.rb`. | `/var/vagrant` |
 
@@ -223,6 +226,9 @@ The repository layout:
 | `vagrant/libvirt.rb`      | Libvirt/KVM provider block.                                     |
 | `bootstrap.sh`            | In-guest provisioner: runs `opnsense-bootstrap.sh`, then rewrites `config.xml`. |
 | `files/`                  | XML fragments merged into OPNsense's `config.xml` during provisioning. |
+
+The OPNsense sources are not part of this repository; `core` is cloned next to it — see
+[Development Workflow](#development-workflow).
 
 `Vagrantfile` picks the provider from the `PROVIDER` environment variable (default: `virtualbox`; `vbox` and `kvm` are accepted aliases) and sets `VAGRANT_DEFAULT_PROVIDER` accordingly, so no `--provider=` flag is needed. It prints the resolved provider as `==> PROVIDER = ...` on every run.
 
@@ -266,50 +272,175 @@ Root-level access (`sudo`) via the `vagrant` user requires no password prompt by
 
 ### Development Workflow
 
-On Linux and macOS the root of this project folder is mounted into the VM at `/var/vagrant` over
-NFS, so you can edit on the host and evaluate inside the guest immediately.
+The sources live on the host and reach the guest at `/var/vagrant/core`. You edit with the tools
+already on your machine — editor, `git`, search — and the guest only compiles and runs.
 
-To work on the OPNsense sources themselves, clone them **from inside the guest** into that same
-directory. Under NFS they then land in your host filesystem too and can be edited with host tools;
-on Windows they stay inside the guest and are reached over SFTP. See the
-[OPNsense tools documentation](https://github.com/opnsense/tools) for details on the build system.
+`core` sits **next to** this repository rather than inside it, so the two stay separate checkouts
+with separate histories:
 
-```sh
-# log in to the box and become root — press [8] in the OPNsense menu for a shell
-vagrant ssh
-sudo su -
-
-# install git and mark the mounted directories as safe
-pkg install git
-for d in core plugins ports src tools; do
-  git config --global --add safe.directory /var/vagrant/$d
-done
-
-# clone the OPNsense repositories — this will take some time
-cd /var/vagrant
-git clone https://github.com/opnsense/tools
-cd tools
-env ROOTDIR=/var/vagrant make update
+```
+<working directory>/        ← open this folder in VS Code
+├── vagrant-opnsense/       ← this repository: Vagrantfile, bootstrap.sh, files/
+├── core/                   ← opnsense/core, branch stable/26.7
+└── .vscode/
+    └── sftp.json           ← sync configuration, per machine, not in git
 ```
 
-Those directories (`core/`, `plugins/`, `ports/`, `src/`, `tools/`, `update/`) are listed in
-[`.gitignore`](.gitignore) so they never end up in this repository's history.
+Clone it once, from the working directory:
+
+```bash
+git clone --config core.autocrlf=false --branch stable/26.7 \
+    https://github.com/opnsense/core.git core
+```
+
+Pin it to the release the VM runs: `stable/26.7` matches the `OPNSENSE_RELEASE` default. Neither
+checkout ignores the other, because neither contains the other.
+
+How the tree reaches the guest depends on the host:
+
+| Host | Mechanism | What you do |
+| --- | --- | --- |
+| Linux, macOS | NFS mount of `../core` at `/var/vagrant/core` | Nothing. A save on the host is already visible in the guest. |
+| Windows | BKCSFTP (VS Code), upload on save | Follow [Editing on Windows](#editing-on-windows) once per machine. |
+
+Only `core` crosses over. This repository is never synced — `bootstrap.sh` and `files/` are uploaded
+by the provisioner instead. `core/work/` is excluded too: it is the working directory `make mount`
+builds with `mount_unionfs`, which only means anything inside the guest.
+
+On Linux and macOS the mount is declared against `../core`, so clone it before the first
+`vagrant up`. Without it Vagrant prints the path it looked in and boots the VM with nothing mounted.
+
+Build and install from a guest shell:
+
+```sh
+vagrant ssh
+sudo sh
+
+cd /var/vagrant/core
+make mount      # overlay src/ onto /usr/local and restart configd
+make collect    # pull changes made on the appliance back into the tree
+make umount     # drop the overlay
+make install    # a real install, to test it the way a release behaves
+```
+
+See the [OPNsense tools documentation](https://github.com/opnsense/tools) for the rest of the build
+system.
+
+### File Permissions
+
+`make mount` overlays `src/` straight onto `/usr/local`, so the modes in the source tree become the
+modes of the running system. 423 of core's 2679 files carry the execute bit, 322 of them under
+`src/opnsense/scripts` — lose it and configd cannot run them.
+
+Windows has no execute bit: every file reports as mode `0666`. On Linux and macOS this is a
+non-issue, because NFS carries the host's modes through and the host checkout already has them
+right. On Windows the modes have to be declared, which is what `filePermRules` in
+`.vscode/sftp.json` does — the rule list is in [Editing on Windows](#editing-on-windows). A matching
+rule outranks both `filePerm` and the target's existing mode, so it holds for new files and
+re-applies on every upload.
+
+The rules grant `755` by directory, covering every path in core that holds executables. A handful of
+data files in those directories end up `755` as well; nothing reads that bit on them. In the other
+direction the rules miss the fonts under `src/opnsense/www/themes`, which git marks `755`; they work
+fine at `644`.
+
+Do not set `filePerm` or `dirPerm` instead. Both force one mode onto everything and switch mode
+preservation off entirely.
+
+### sudo and the union mount
+
+`make mount` overlays `src/` onto `/usr/local`, which makes `src/etc/sudoers.d` in the source tree
+become `/usr/local/etc/sudoers.d` on the running system — and a directory that comes from the upper
+layer carries that layer's ownership. The synced tree belongs to the `vagrant` user, not to root.
+
+sudo refuses to read an include directory it does not consider secure, and ownership by anyone other
+than root is enough to disqualify it. sudo then skips the whole directory, `vagrant` loses the
+`NOPASSWD` rule `bootstrap.sh` wrote into `/usr/local/etc/sudoers.d/vagrant`, and `sudo` starts
+asking for a password nobody has. The NFS path has the same problem, where the exported files carry
+the host user's uid.
+
+So `src/etc/sudoers.d` never reaches the guest: `ignore` drops it on Windows, and the provisioner
+mounts an empty root-owned tmpfs over it under NFS. Nothing is lost — the only file there is
+`src/etc/sudoers.d/opnsense`, which upstream marks `OBSOLETE` and plans to delete in 26.7. The live
+rules come from `/usr/local/etc/sudoers.d/20-opnsense`, rendered by configd from
+`src/opnsense/service/templates/OPNsense/Auth/sudoers`, and from the box's own `vagrant` file.
+
+To check the state on a running VM:
+
+```sh
+mount | grep unionfs
+ls -ld /usr/local/etc/sudoers.d
+sudo -l
+```
+
+The directory has to be `root:wheel`. If `sudo` is already refusing, `make umount` in
+`/var/vagrant/core` drops the overlay and gets a working shell back.
+
+### Line endings in core
+
+`opnsense/core` ships no `.gitattributes`, and Git for Windows installs with `core.autocrlf=true`.
+Cloning core on Windows with the default therefore rewrites every text file to CRLF, the sync copies
+those bytes into the guest unchanged, and the carriage returns end up in files FreeBSD executes.
+
+308 files in core start with a shebang; 60 of them sit under `src/etc` and reach `/usr/local/etc`
+through the union mount. A `\r` in the shebang makes the kernel look for an interpreter named
+`python3\r`, so the script fails with a message that names a binary you can see is installed.
+
+The 109 configd templates are worse, because `+TARGETS` sends three of them outside `/usr/local`:
+
+```
+sshd.pam:/etc/pam.d/sshd
+system.pam:/etc/pam.d/system
+csh.cshrc:/etc/csh.cshrc
+```
+
+configd re-renders those whenever it restarts, which `make mount` does. A CRLF template writes a
+CRLF `/etc/pam.d/sshd`, and a broken pam stack means `vagrant ssh` stops working — with the source
+of the breakage sitting on the host, where the VM cannot be reached to fix it.
+
+The clone command above sets `core.autocrlf=false` for that one repository, which is enough. For a
+clone made before this was documented:
+
+```bash
+git -C core config core.autocrlf false
+git -C core rm --cached -r .
+git -C core reset --hard
+```
+
+Check it in the guest whenever something behaves oddly after a sync:
+
+```sh
+head -1 /usr/local/etc/rc.bootup | od -c | head -1
+```
+
+A `\r` before the `\n` means the tree came across with CRLF. Editors count too: set
+`"files.eol": "\n"` in the workspace settings so files you create there match the rest of the tree.
 
 ### Editing on Windows
 
 Windows has no NFS server, and `vboxsf` does not work on FreeBSD, so `SYNC_TYPE` defaults to `none`
-there: nothing is mounted and `/var/vagrant` exists only inside the guest. Edit it in place over
-SSH/SFTP, which keeps a single copy of every file and leaves permissions and line endings alone.
+there and Vagrant mounts nothing. **BKCSFTP** — the team's fork of the VS Code SFTP extension —
+takes over that job: the host tree stays the original, and every save is pushed into the guest.
 
-Use the [SFTP extension by Natizyskunk](https://marketplace.visualstudio.com/items?itemName=Natizyskunk.sftp)
-for VS Code. Vagrant already generates the key and prints the connection details:
+Install it from the `.vsix` the team distributes; it is not on the Marketplace:
+
+```powershell
+code --install-extension bkcsftp-<version>.vsix
+```
+
+Uninstall any other SFTP extension first. BKCSFTP keeps the upstream `sftp.*` command ids, so two of
+them installed at once fight over those ids and files can upload twice. BKCSFTP warns when it
+detects one, but removing it beforehand is simpler.
+
+Vagrant generates the key and prints the connection details:
 
 ```powershell
 vagrant ssh-config
 ```
 
-Take `Port` and `IdentityFile` from that output. Then open the repository folder in VS Code, run
-**SFTP: Config** from the command palette, and replace the generated `.vscode/sftp.json` with:
+Take `Port` and `IdentityFile` from that output. Open the **working directory** in VS Code — the
+folder holding both `vagrant-opnsense` and `core`, not either one of them — then run
+**SFTP: Config** from the command palette and replace the generated `.vscode/sftp.json` with:
 
 ```json
 {
@@ -318,21 +449,102 @@ Take `Port` and `IdentityFile` from that output. Then open the repository folder
   "port": 2222,
   "protocol": "sftp",
   "username": "vagrant",
-  "privateKeyPath": ".vagrant/machines/default/virtualbox/private_key",
-  "remotePath": "/var/vagrant",
+  "privateKeyPath": "vagrant-opnsense/.vagrant/machines/default/virtualbox/private_key",
+  "context": "core",
+  "remotePath": "/var/vagrant/core",
   "uploadOnSave": true,
+  "downloadOnOpen": false,
   "useTempFile": false,
-  "openSsh": false
+  "openSsh": false,
+  "concurrency": 1,
+  "watcher": {
+    "files": "**/*",
+    "autoUpload": true,
+    "autoDelete": false
+  },
+  "ignore": [
+    ".git",
+    "work",
+    "src/etc/sudoers.d"
+  ],
+  "filePermRules": [
+    {
+      "match": [
+        "Scripts/**",
+        "contrib/**",
+        "src/etc/rc*",
+        "src/etc/rc.d/**",
+        "src/etc/rc.subr.d/**",
+        "src/etc/rc.syshook.d/**",
+        "src/etc/inc/plugins.inc.d/openvpn/**",
+        "src/libexec/**",
+        "src/sbin/**",
+        "src/opnsense/mvc/script/**",
+        "src/opnsense/scripts/**",
+        "src/opnsense/service/**"
+      ],
+      "perm": "755"
+    }
+  ]
 }
 ```
 
-The `virtualbox` segment follows the provider in use (`virtualbox` or `libvirt`), and the path is
-resolved against the folder open in VS Code. The **SFTP** view in the Explorer sidebar then browses
-`/var/vagrant`; a save writes straight back into the guest. `SFTP: Download Folder` pulls a
-host-side copy when one is wanted for searching, and `uploadOnSave` keeps it pushed back.
+`port` comes from `vagrant ssh-config`, and the `virtualbox` segment of `privateKeyPath` follows the
+provider in use.
+
+`context` narrows the sync to `core` alone, which is why `ignore` and the `match` patterns are
+written relative to `core` and this repository appears in neither. The two kinds of path resolve
+from different roots: `privateKeyPath` from the folder open in VS Code, everything else from
+`context`.
+
+`uploadOnSave` covers edits made in the editor. `watcher` covers everything else that changes `core`
+on disk — `git checkout`, `git pull`, a file written by another tool — so a branch switch on the
+host reaches the guest without any further action.
+
+Seed the guest once after `vagrant up`:
+
+```
+SFTP: Sync Local -> Remote
+```
+
+It walks the whole tree, which takes a few minutes; afterwards only changed files move.
+
+> **Check where `core` resolves before that first sync.** `context` is read relative to the folder
+> open in VS Code, so opening `vagrant-opnsense` instead of the working directory, or having cloned
+> `core` somewhere else, sends the wrong tree — or nothing at all — into `/var/vagrant/core`.
+> `autoDelete` is off, so a wrong push is not destructive, but it does leave a mixed tree in the
+> guest that is easier to avoid than to clean up.
+>
+> Open **Output → sftp**. Loading the config logs a line starting `config at <path>` followed by the
+> resolved settings; the path has to be the working directory, and `remotePath` has to read
+> `/var/vagrant/core`. Then confirm the guest received the tree:
+>
+> ```sh
+> vagrant ssh -c "ls /var/vagrant/core"
+> ```
+>
+> The answer should list `src`, `Makefile` and the rest of core — not `Vagrantfile`, and not
+> an empty directory.
+
+Transfers run one direction only. `ignore` keeps `work` out of the picture — that directory holds
+the union mounts `make mount` creates in the guest, and none of it belongs on the host. Use
+`SFTP: Sync Local -> Remote` to re-push, never `SFTP: Download Folder`.
+
+The guest still needs `work` to exist: `make mount` writes `work/.mount_done` but does not create
+the directory. Since the sync never sends it, the provisioner does, on every `vagrant up`. A fresh
+clone also has a `work/` on the host, holding the single file `work/.gitignore` with `*` in it,
+which is how core keeps its own build output out of `git status`.
+
+`src/etc/sudoers.d` is excluded for a different reason — see [sudo and the union
+mount](#sudo-and-the-union-mount).
+
+Files opened from the Remote Explorer are read-only previews. To edit one in place, set
+`"downloadWhenOpenInRemoteExplorer": true` in `sftp.json`, or use **Edit in Local** from its context
+menu. Neither is needed for the normal workflow, where the host copy is the one you edit.
 
 A `vagrant destroy` and rebuild changes the port and the key, so `port` in `.vscode/sftp.json` has
-to be updated afterwards. That file is per-machine and is gitignored.
+to be updated afterwards. That file is per-machine; it lives in the working directory, outside both
+git repositories.
 
 VS Code's terminal runs on the host here, so `make mount` and `make install` are run through
 `vagrant ssh`.
@@ -341,11 +553,12 @@ Changes to this repository itself are made on the host and take effect on the ne
 `vagrant reload`, or `vagrant provision` — `bootstrap.sh` and `files/` are uploaded by the
 provisioner, not by a synced folder.
 
-Line endings need no attention. [`.gitattributes`](.gitattributes) checks every text file out with
-LF regardless of `core.autocrlf`, and the provisioner strips carriage returns anyway: `bootstrap.sh`
-is uploaded and piped through `tr -d '\r'` before `/bin/sh` sees it, and the script does the same
-for `files/*.xml` before merging them into `config.xml`. A file that picks up CRLF from an editor on
-the host still provisions correctly.
+Line endings need no attention **in this repository**. [`.gitattributes`](.gitattributes) checks
+every text file out with LF regardless of `core.autocrlf`, and the provisioner strips carriage
+returns anyway: `bootstrap.sh` is uploaded and piped through `tr -d '\r'` before `/bin/sh` sees it,
+and the script does the same for `files/*.xml` before merging them into `config.xml`.
+
+`core` has neither protection — see [Line endings in core](#line-endings-in-core).
 
 ## Troubleshooting & Maintenance
 
@@ -355,6 +568,29 @@ If `192.168.56.56` collides with your local infrastructure:
 2. Modify `$virtual_machine_ip` in [`vagrant/common.rb`](vagrant/common.rb) — one place, every provider.
 3. Restart the environment: `vagrant up`.
 4. Access the web interface using the newly assigned IP address.
+
+**`make mount` fails on `work/.mount_done`**
+`work` is excluded from the sync, so the guest gets it from the provisioner. On a VM brought up
+before that provisioner existed the directory is missing, and `make mount` fails halfway:
+`mount_unionfs` has already run, `touch work/.mount_done` has not. `make umount` then finds no
+`.mount_done`, does nothing, and leaves the overlay in place. Clear it by hand and start again:
+
+```sh
+umount -f "<above>:/var/vagrant/core/src"
+mkdir -p /var/vagrant/core/work
+make mount
+```
+
+`vagrant reload` fixes it too, since the provisioner runs on every boot.
+
+**`sudo` asks for a password after `make mount`**
+`/usr/local/etc/sudoers.d` is coming from the source tree and is not root-owned — see
+[sudo and the union mount](#sudo-and-the-union-mount). `make umount` restores it immediately; the
+lasting fix is the `ignore` entry and the tmpfs mask, both already in place on a current checkout.
+
+**A script in the guest fails naming an interpreter that exists**
+`env: python3\r: No such file or directory`, or an rc script reported as not found. The tree carried
+CRLF across — see [Line endings in core](#line-endings-in-core).
 
 **Changing the OPNsense release**
 Set `OPNSENSE_RELEASE` (e.g. `OPNSENSE_RELEASE=26.1 vagrant up`). The core branch follows

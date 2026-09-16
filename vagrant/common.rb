@@ -47,13 +47,18 @@ def opnsense_common(config)
   #
   # Synced folders
   #
-  # vboxsf không chạy trên FreeBSD, nên chỉ còn hai lựa chọn:
-  #   nfs  - hai chiều, phản ánh sửa đổi ngay lập tức; host phải có NFS server
-  #          (Linux, macOS). Đây là mặc định ngoài Windows.
-  #   none - không gắn thư mục nào vào guest. Mặc định trên Windows: Windows
-  #          không có NFS server, còn rsync thì một chiều và làm hỏng quyền
-  #          file lẫn ký tự kết thúc dòng. Thay vào đó, sửa file trực tiếp
-  #          trong guest qua SSH/SFTP (VS Code Remote-SSH) — xem README.
+  # Mã nguồn nằm trên host, trong thư mục core/ đặt cạnh repo này, rồi được đưa
+  # vào guest tại $vagrant_mount_path/core. Guest chỉ biên dịch và chạy.
+  #
+  #   <thư mục làm việc>/
+  #   ├── vagrant-opnsense/   repo này
+  #   └── core/               opnsense/core, nhánh stable/<release>
+  #
+  # vboxsf không chạy trên FreeBSD, nên chỉ còn hai cơ chế:
+  #   nfs  - hai chiều, sửa trên host là guest thấy ngay; host phải có NFS
+  #          server (Linux, macOS). Mặc định ngoài Windows.
+  #   none - Vagrant không gắn gì. Mặc định trên Windows, nơi không có NFS
+  #          server: extension BKCSFTP của VS Code đẩy file sang mỗi lần lưu.
   # Ép kiểu khác mặc định bằng SYNC_TYPE=nfs|none.
   #
   $sync_type = ENV.fetch('SYNC_TYPE', Vagrant::Util::Platform.windows? ? 'none' : 'nfs').downcase
@@ -62,30 +67,61 @@ def opnsense_common(config)
   end
   puts "==> SYNC_TYPE = #{$sync_type}"
 
+  # Đường dẫn tuyệt đối tới cây mã nguồn trên host, để kiểm tra sự tồn tại.
+  # __dir__ là thư mục vagrant/ nên lùi hai cấp mới ra ngang hàng với repo.
+  $core_path = File.expand_path('../../core', __dir__)
+
   # Disable the default /vagrant share; mount our own when a mechanism exists.
   config.vm.synced_folder '.', '/vagrant', id: 'vagrant-root', disabled: true
   if $sync_type == 'nfs'
-    config.vm.synced_folder '.', $vagrant_mount_path, type: 'nfs', nfs_udp: false
+    if File.directory?($core_path)
+      config.vm.synced_folder '../core', "#{$vagrant_mount_path}/core",
+                              type: 'nfs', nfs_udp: false
+    else
+      puts "==> Không thấy #{$core_path}"
+      puts "    Clone opnsense/core vào đó rồi chạy lại. Xem README."
+    end
   else
-    puts "==> Không gắn #{$vagrant_mount_path} từ host. Làm việc với mã nguồn"
-    puts "    bên trong guest qua SSH/SFTP: vagrant ssh-config"
+    puts "==> Vagrant không gắn #{$vagrant_mount_path}. Đẩy mã nguồn từ host sang"
+    puts "    guest bằng extension BKCSFTP của VS Code: vagrant ssh-config"
   end
 
   config.ssh.shell      = '/bin/sh'
   config.ssh.keep_alive = true
   config.vm.boot_timeout = 6000
 
-  # Ở chế độ nfs: che thư mục .git của repo bên trong mount (phủ tmpfs rỗng).
-  # Ở chế độ none: tạo sẵn thư mục để clone mã nguồn OPNsense vào đó.
+  # Hai thư mục trong cây mã nguồn cần được che khỏi guest.
+  #
+  #   work            thư mục làm việc của `make mount`: mount_unionfs và file
+  #                   tạm chỉ có nghĩa bên trong guest, không được đi ra host.
+  #   src/etc/sudoers.d
+  #                   `make mount` phủ src/ lên /usr/local, nên thư mục này
+  #                   thành /usr/local/etc/sudoers.d và mang quyền sở hữu của
+  #                   cây mã nguồn. sudo chỉ đọc sudoers.d khi thư mục thuộc
+  #                   root; thuộc user khác thì nó bỏ qua cả thư mục, kéo theo
+  #                   mất luôn file `vagrant` mà bootstrap.sh đã dựng, và
+  #                   `sudo` trong guest bắt đầu hỏi mật khẩu. Phủ tmpfs rỗng
+  #                   thuộc root lên là xong; file duy nhất bên trong
+  #                   (src/etc/sudoers.d/opnsense) upstream đã đánh dấu
+  #                   OBSOLETE, gỡ trong 26.7.
+  #
+  # Ở chế độ nfs, phủ tmpfs lên cả hai. Ở chế độ none, work chỉ cần tạo sẵn vì
+  # `make mount` touch work/.mount_done chứ không tự tạo thư mục, còn
+  # src/etc/sudoers.d thì đã bị loại ngay từ `ignore` trong .vscode/sftp.json.
   if $sync_type == 'nfs'
     config.vm.provision "shell", run: "always", inline: <<-SHELL
-      if [ -d "#{$vagrant_mount_path}/.git" ]; then
-        mount -t tmpfs tmpfs "#{$vagrant_mount_path}/.git"
+      if [ -d "#{$vagrant_mount_path}/core" ]; then
+        mkdir -p "#{$vagrant_mount_path}/core/work"
+        mount | grep -q " on #{$vagrant_mount_path}/core/work " || mount -t tmpfs tmpfs "#{$vagrant_mount_path}/core/work"
+        if [ -d "#{$vagrant_mount_path}/core/src/etc/sudoers.d" ]; then
+          mount | grep -q " on #{$vagrant_mount_path}/core/src/etc/sudoers.d " || mount -t tmpfs tmpfs "#{$vagrant_mount_path}/core/src/etc/sudoers.d"
+        fi
       fi
     SHELL
   else
     config.vm.provision "shell", run: "always", inline: <<-SHELL
-      mkdir -p "#{$vagrant_mount_path}"
+      mkdir -p "#{$vagrant_mount_path}/core/work"
+      chown vagrant:vagrant "#{$vagrant_mount_path}" "#{$vagrant_mount_path}/core" "#{$vagrant_mount_path}/core/work"
     SHELL
   end
 

@@ -1,10 +1,2 @@
 .vagrant
 tmp/
-
-# OPNsense source tree, cloned into /var/vagrant from inside the guest.
-core/
-plugins/
-ports/
-src/
-tools/
-update/
