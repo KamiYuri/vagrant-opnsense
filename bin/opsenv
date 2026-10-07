@@ -1,0 +1,224 @@
+#!/bin/sh
+set -eu
+
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CORE=$(dirname "$ROOT")/core
+REMOTE=${OPSENV_CORE_REMOTE:-https://github.com/opnsense/core.git}
+RELEASE=${OPNSENSE_RELEASE:-$(sed -n "s/.*OPNSENSE_RELEASE', *'\([^']*\)'.*/\1/p" "$ROOT/vagrant/common.rb")}
+BOX=$(sed -n 's/.*config\.vm\.box *= *"\([^"]*\)".*/\1/p' "$ROOT/vagrant/common.rb")
+PROVIDER=${PROVIDER:-virtualbox}
+case "$PROVIDER" in
+    vbox) PROVIDER=virtualbox ;;
+    kvm) PROVIDER=libvirt ;;
+esac
+
+log() { printf '==> %s\n' "$*"; }
+fail() { printf 'ERROR: %s\n' "$*" >&2; exit 1; }
+vg() { (cd "$ROOT" && PROVIDER="$PROVIDER" vagrant "$@"); }
+git_core() { git -C "$CORE" "$@"; }
+prepare_nfs() {
+    [ "$sync" = nfs ] || return 0
+    vg ssh -c 'test -f /var/vagrant/core/Makefile' || fail 'Core NFS share missing from guest'
+    vg ssh -c 'sudo sh -c '\''set -e; mkdir -p /var/vagrant/core/work; mount | grep -q " on /var/vagrant/core/work " || mount -t tmpfs tmpfs /var/vagrant/core/work; if [ -d /var/vagrant/core/src/etc/sudoers.d ]; then mount | grep -q " on /var/vagrant/core/src/etc/sudoers.d " || mount -t tmpfs tmpfs /var/vagrant/core/src/etc/sudoers.d; fi'\'''
+}
+conflicts() {
+    printf 'Unresolved files:\n' >&2
+    git_core status --short >&2
+    git_core ls-files -u >&2
+    git_core diff --cc >&2 || :
+    printf 'Your original checkout is saved as %s and your edits as refs/opsenv/last-stash.\n' "$backup" >&2
+    fail "Resolve the conflicts shown above, then rerun bin/opsenv"
+}
+
+[ -f "$ROOT/Vagrantfile" ] || fail "Vagrantfile not found at $ROOT"
+case "$RELEASE" in
+    ''|*[!0-9.]*|.*|*.) fail "Invalid OPNsense release: $RELEASE" ;;
+esac
+case "$PROVIDER" in
+    virtualbox|libvirt) ;;
+    *) fail "Unsupported provider: $PROVIDER" ;;
+esac
+[ -n "$BOX" ] || fail 'Cannot read config.vm.box from vagrant/common.rb'
+command -v git >/dev/null 2>&1 || fail 'git is required'
+command -v vagrant >/dev/null 2>&1 || fail 'vagrant is required'
+log "Environment: release=$RELEASE provider=$PROVIDER box=$BOX core=$CORE"
+
+if [ "$PROVIDER" = libvirt ]; then
+    plugin=vagrant-libvirt
+else
+    plugin=vagrant-disksize
+fi
+if ! vg plugin list | grep -q "^$plugin "; then
+    log "Installing missing Vagrant plugin: $plugin"
+    vg plugin install "$plugin" --plugin-clean-sources --plugin-source https://rubygems.org
+fi
+if ! vg box list | awk -v box="$BOX" -v provider="$PROVIDER" '
+    /\(/ {
+        name = substr($0, 1, index($0, "(") - 1)
+        sub(/[[:space:]]+$/, "", name)
+        details = substr($0, index($0, "(") + 1)
+        if (name == box && index(details, provider ",") == 1) found = 1
+    }
+    END { exit !found }
+'; then
+    [ -f "${OPSENV_BOX_FILE:-}" ] || fail "Download the $BOX ($PROVIDER) box and set OPSENV_BOX_FILE to its path"
+    log "Registering $BOX ($PROVIDER) from $OPSENV_BOX_FILE"
+    vg box add --name "$BOX" --provider "$PROVIDER" "$OPSENV_BOX_FILE"
+fi
+
+branch=stable/$RELEASE
+if [ ! -e "$CORE" ]; then
+    log "Cloning $branch into $CORE"
+    git clone --config core.autocrlf=false --branch "$branch" "$REMOTE" "$CORE"
+fi
+gitdir=$(git_core rev-parse --absolute-git-dir) || fail "$CORE is not a Git checkout"
+[ -z "$(git_core ls-files -u)" ] || fail "Unresolved conflicts already exist in $CORE; resolve them before rerunning"
+case "$(git_core config --get core.autocrlf || :)" in
+    true) fail 'core.autocrlf=true corrupts shell scripts on Windows; preserve edits, set it to false, then restore LF line endings' ;;
+esac
+if git_core rev-parse -q --verify MERGE_HEAD >/dev/null 2>&1 ||
+   [ -d "$gitdir/rebase-merge" ] ||
+   [ -d "$gitdir/rebase-apply" ]; then
+    fail "A merge or rebase is already in progress in $CORE"
+fi
+pending_ref=refs/opsenv/pending-stash
+if pending_sha=$(git_core rev-parse -q --verify "$pending_ref" 2>/dev/null); then
+    [ -z "$(git_core status --porcelain)" ] || fail "Pending edits are saved as $pending_sha; resolve the working tree before rerunning"
+    if git_core stash list --format=%H | grep -Fxq "$pending_sha"; then
+        log "Resuming interrupted update: reapplying saved edits $pending_sha"
+        backup=$(git_core symbolic-ref --quiet --short HEAD || :)
+        if ! git_core stash apply "$pending_sha"; then
+            conflicts
+        fi
+    fi
+    git_core update-ref -d "$pending_ref"
+fi
+current=$(git_core symbolic-ref --quiet --short HEAD) || fail 'Detached core HEAD; switch to a branch first'
+case "$current" in
+    stable/*) [ "$current" = "$branch" ] || fail "$current does not match $branch" ;;
+esac
+backup=opsenv-backup-$(date -u +%Y%m%dT%H%M%S)-$$
+log "Fetching $branch from $REMOTE"
+git_core fetch "$REMOTE" "refs/heads/$branch"
+if [ "$(git_core rev-parse HEAD)" != "$(git_core rev-parse FETCH_HEAD)" ]; then
+    git_core merge-base HEAD FETCH_HEAD >/dev/null || fail 'No common history with upstream; not merging'
+    log "Saving pre-update HEAD as $backup"
+    git_core branch "$backup"
+    dirty=$(git_core status --porcelain --untracked-files=normal)
+    if [ -n "$dirty" ]; then
+        git_core stash push -u -m "$backup"
+        stash_sha=$(git_core rev-parse refs/stash)
+        git_core update-ref refs/opsenv/last-stash "$stash_sha"
+        git_core update-ref "$pending_ref" "$stash_sha"
+        log 'Saved local edits in refs/opsenv/last-stash'
+    fi
+    git_core config rerere.enabled true
+    git_core config rerere.autoupdate true
+    log "Merging upstream into $current"
+    if ! git_core merge --no-edit FETCH_HEAD; then
+        conflicts
+    fi
+    if [ -n "$dirty" ]; then
+        log 'Reapplying local edits'
+        if ! git_core stash pop; then
+            git_core update-ref -d "$pending_ref"
+            conflicts
+        fi
+        git_core update-ref -d "$pending_ref"
+    fi
+else
+    log 'Core HEAD is already current; preserving local edits'
+fi
+
+sync=${SYNC_TYPE:-}
+if [ -z "$sync" ]; then
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*) sync=none ;;
+        *) sync=nfs ;;
+    esac
+fi
+
+state=$(vg status --machine-readable | awk -F, '$3 == "state" { state=$4 } END { print state }')
+case "$state" in
+    running) log 'VM already running' ;;
+    not_created)
+        log 'Creating and provisioning the VM'
+        if ! vg up; then
+            state=$(vg status --machine-readable | awk -F, '$3 == "state" { state=$4 } END { print state }')
+            case "$state" in
+                poweroff|shutoff) ;;
+                *) fail 'Initial vagrant up failed; inspect provisioning output' ;;
+            esac
+        fi
+        state=$(vg status --machine-readable | awk -F, '$3 == "state" { state=$4 } END { print state }')
+        if [ "$state" != running ]; then
+            log 'Starting the newly provisioned VM without rerunning bootstrap'
+            vg up --no-provision
+        fi
+        ;;
+    poweroff|shutoff|saved|aborted)
+        log 'Starting existing VM without rerunning bootstrap'
+        vg up --no-provision
+        ;;
+    paused|pmsuspended)
+        log 'Resuming paused VM'
+        vg resume
+        ;;
+    *) fail "Unsupported VM state: $state" ;;
+esac
+vg ssh -c 'opnsense-version -a' >/dev/null || fail 'OPNsense is not reachable in the VM'
+installed=$(vg ssh -c 'opnsense-version -a' | tr -d '\r\n')
+[ "$installed" = "$RELEASE" ] || fail "VM series $installed differs from target $RELEASE; a major migration requires a new matching box/VM"
+vg ssh -c 'mount | grep -q " on /usr/local .*unionfs" && exit 1 || exit 0' || fail 'Unmount make mount before updating firmware or core'
+prepare_nfs
+
+log 'Checking base, kernel and installed packages'
+if vg ssh -c 'sudo sh -c '\''set -e; for f in /usr/local/opnsense/version/base.lock /usr/local/opnsense/version/kernel.lock /usr/local/opnsense/version/pkgs.lock; do [ ! -e "$f" ] || { echo "Locked update: $f" >&2; exit 2; }; done; pkg update >/dev/null; if opnsense-update -c; then exit 0; fi; versions=$(pkg version -vR); if printf "%s\n" "$versions" | grep -E " [<][[:space:]]" >/dev/null; then exit 0; fi; exit 1'\''' ; then
+    log 'Saving one rollback snapshot before firmware update'
+    if vg snapshot list | grep -Eq '(^|[[:space:]])opsenv-previous([[:space:]]|$)'; then
+        vg snapshot delete opsenv-previous
+    fi
+    vg snapshot save opsenv-previous || fail 'Snapshot failed; refusing firmware update'
+    log 'Updating OPNsense packages, FreeBSD base and kernel'
+    vg ssh -c 'sudo opnsense-update -bkp' || fail 'Firmware update failed; restore with vagrant snapshot restore --no-provision opsenv-previous'
+    log 'Rebooting without rerunning bootstrap'
+    vg reload --no-provision || fail 'Reboot failed; restore with vagrant snapshot restore --no-provision opsenv-previous'
+    prepare_nfs
+else
+    result=$?
+    [ "$result" -eq 1 ] || fail "Unable to check guest updates (exit $result)"
+    log 'Guest packages, base and kernel already current'
+fi
+
+case "$sync" in
+    nfs)
+        prepare_nfs
+        ;;
+    none)
+        command -v tar >/dev/null 2>&1 || fail 'tar is required for SFTP-less guest sync'
+        archive=$(mktemp "${TMPDIR:-/tmp}/opsenv-core.XXXXXXXX.tar.gz")
+        list=$(mktemp "${TMPDIR:-/tmp}/opsenv-files.XXXXXXXX")
+        modes=$(mktemp "${TMPDIR:-/tmp}/opsenv-modes.XXXXXXXX")
+        trap 'rm -f "$archive" "$list" "$modes"' 0
+        (cd "$CORE" && git ls-files -z --cached --others --exclude-standard | xargs -0 -n1 sh -c '
+            file=${1:-}
+            case "$file" in work/*|src/etc/sudoers.d/*) exit 0 ;; esac
+            [ -f "$file" ] && printf "%s\0" "$file" || :
+        ' sh) > "$list"
+        [ -s "$list" ] || fail 'No core files to upload'
+        git_core -c core.quotepath=false ls-files --stage | awk -F '\t' '$1 ~ /^100755 / { print $2 }' > "$modes"
+        (cd "$CORE" && git ls-files -z --others --exclude-standard | xargs -0 -n1 sh -c '
+            [ ! -x "${1:-}" ] || printf "%s\n" "$1"
+        ' sh) >> "$modes"
+        tar -C "$CORE" --null -czf "$archive" -T "$list"
+        log 'Uploading tracked and untracked core files to the guest'
+        case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) export MSYS2_ARG_CONV_EXCL=/home/vagrant ;; esac
+        vg upload "$archive" /home/vagrant/opsenv-core.tar.gz
+        vg upload "$modes" /home/vagrant/opsenv-modes.txt
+        vg ssh -c 'set -eu; stage=$(mktemp -d /var/vagrant/core.opsenv.XXXXXXXX); tar -xzf /home/vagrant/opsenv-core.tar.gz -C "$stage"; find "$stage" -type f -exec chmod 644 {} +; while IFS= read -r file; do [ ! -f "$stage/$file" ] || chmod 755 "$stage/$file"; done < /home/vagrant/opsenv-modes.txt; mkdir -p "$stage/work"; if [ -d /var/vagrant/core ]; then mv /var/vagrant/core /var/vagrant/core.opsenv-old; fi; mv "$stage" /var/vagrant/core; rm -rf /var/vagrant/core.opsenv-old /home/vagrant/opsenv-core.tar.gz /home/vagrant/opsenv-modes.txt'
+        ;;
+    *) fail "Unsupported SYNC_TYPE: $sync" ;;
+esac
+log 'Installing the updated local core into the guest'
+vg ssh -c 'sudo sh -c "cd /var/vagrant/core && make install"' || fail 'make install failed; source edits remain safe on the host'
+log 'Update complete'

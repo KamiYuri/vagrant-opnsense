@@ -73,8 +73,7 @@ sed -i '' -e "s/mismatch1/${NIC_PREFIX}0/" /usr/local/etc/config.xml
 sed -i '' -e '/<ipaddrv6>dhcp6<\/ipaddrv6>/d' /usr/local/etc/config.xml
 
 # Remove IPv6 configuration from LAN
-sed -i '' -e '/<ipaddrv6>track6<\/ipaddrv6>/d' /usr/local/etc/config.xml
-sed -i '' -e '/<subnetv6>64<\/subnetv6>/d' /usr/local/etc/config.xml
+sed -i '' -e '/<ipaddrv6>idassoc6<\/ipaddrv6>/d' /usr/local/etc/config.xml
 sed -i '' -e '/<track6-interface>wan<\/track6-interface>/d' /usr/local/etc/config.xml
 sed -i '' -e '/<track6-prefix-id>0<\/track6-prefix-id>/d' /usr/local/etc/config.xml
 

@@ -1,0 +1,30 @@
+name: Upstream compatibility
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test updater behavior
+        run: |
+          sh tests/updater.sh
+          sh tests/workflow.sh
+      - name: Check upstream bootstrap and config compatibility
+        run: sh tests/upstream.sh
+      - name: Warn when a new stable series is published
+        run: |
+          configured=$(sed -n "s/.*OPNSENSE_RELEASE', *'\([^']*\)'.*/\1/p" vagrant/common.rb)
+          latest=$(git ls-remote --heads https://github.com/opnsense/core.git 'refs/heads/stable/*' | sed -n 's@.*refs/heads/stable/\([0-9][0-9]*\.[0-9][0-9]*\)$@\1@p' | sort -V | tail -n 1)
+          if [ -z "$latest" ]; then
+            echo '::warning::Could not determine the latest stable OPNsense series'
+          elif [ "$latest" != "$configured" ]; then
+            echo "::warning::Configured OPNsense $configured; latest stable branch is $latest. Check FreeBSD box compatibility before changing release."
+          fi

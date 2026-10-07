@@ -50,7 +50,7 @@ vagrant up          # create the VM the first time, or boot an existing one
 vagrant ssh         # shell into the guest as the `vagrant` user
 vagrant halt        # graceful shutdown
 vagrant reload      # halt + up, picking up Vagrantfile changes
-vagrant provision   # re-run bootstrap.sh on a machine that is already running
+vagrant provision   # destructive: re-run bootstrap.sh, replacing installed packages
 vagrant status      # is it running, and under which provider?
 vagrant destroy -f  # delete the VM; the next `vagrant up` rebuilds from scratch
 ```
@@ -270,6 +270,33 @@ vagrant ssh
 
 Root-level access (`sudo`) via the `vagrant` user requires no password prompt by default.
 
+### One-command updates
+
+Run `sh bin/opsenv` from this checkout to create or start the VM, advance the host's
+`../core` checkout, update installed OPNsense packages/base/kernel, and apply local core
+edits. Set `PROVIDER=libvirt` on Linux if you use libvirt. The first run needs the
+matching FreeBSD box; register it as described above, or set `OPSENV_BOX_FILE` to the
+downloaded box file so the updater registers it. On Windows, run in Git Bash: the
+updater uploads the source tree itself without requiring BKCSFTP.
+
+Before merging upstream, the updater stashes uncommitted edits, saves the old HEAD on an
+`opsenv-backup-*` branch, and reapplies the stash after Git merges. Git resolves
+nonoverlapping changes automatically and remembers resolutions via `rerere`. If a real
+conflict remains, the script stops and prints the conflicting files and recovery steps;
+it never chooses one side of a conflicting code change. The stash is also retained if
+reapplying it fails. Once resolved, rerun the script.
+
+Before changing the guest firmware, it replaces the previous `opsenv-previous` Vagrant
+snapshot with a new one. Restore it with `vagrant snapshot restore --no-provision
+opsenv-previous` if an update fails. The updater then runs `make install` from your host's source tree, so
+package updates do not permanently replace your local edits. It does not upgrade an
+existing VM across major OPNsense series: a new series may need a different FreeBSD box,
+and changing an existing VM in place could lose guest-only configuration. Create a new
+VM with a compatible box for that case.
+
+`vagrant provision` is **not** an update command: it reruns the bootstrap script,
+replacing installed packages and potentially resetting guest state.
+
 ### Development Workflow
 
 The sources live on the host and reach the guest at `/var/vagrant/core`. You edit with the tools
@@ -341,7 +368,7 @@ system.
 ### File Permissions
 
 `make mount` overlays `src/` straight onto `/usr/local`, so the modes in the source tree become the
-modes of the running system. 423 of core's 2679 files carry the execute bit, 322 of them under
+modes of the running system. Many core scripts carry the execute bit, especially under
 `src/opnsense/scripts` — lose it and configd cannot run them.
 
 Windows has no execute bit: every file reports as mode `0666`. On Linux and macOS this is a
